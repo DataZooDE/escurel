@@ -229,6 +229,8 @@ export interface RuntimeHarness {
   available?: boolean;
   /** Why the probe failed (admins only). */
   probe_error?: string | null;
+  /** Whether a live run on it takes a message (`inject_into_run`); absent from an older runner: unknown. */
+  supports_inject?: boolean | null;
 }
 
 /** One registered runner as `list_runtimes` reports it (#818). */

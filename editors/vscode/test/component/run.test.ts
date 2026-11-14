@@ -923,6 +923,20 @@ describe('<escurel-run-detail> cost, transcript and steering', () => {
     expect((q(el, 'textarea.steer-text') as HTMLTextAreaElement).value).to.equal('');
   });
 
+  it('still offers the box when no runtime says whether the agent takes a message, and says so', async () => {
+    const hint =
+      'Whether the claude agent can take a message is not known here; the runner says if it cannot.';
+    const el = await render({
+      ...liveSteerableRun,
+      harness: 'claude',
+      steer: { available: true, hint },
+    });
+    expect(q(el, 'textarea.steer-text')).to.exist;
+    expect(text(q(el, '.steer-unknown'))).to.equal(hint);
+    const known = await render(liveSteerableRun);
+    expect(q(known, '.steer-unknown')).to.equal(null);
+  });
+
   it('keeps the text when the runner did not take it, and says why', async () => {
     const el = await render(liveSteerableRun);
     const box = q(el, 'textarea.steer-text') as HTMLTextAreaElement;

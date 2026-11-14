@@ -279,13 +279,10 @@ async fn main() -> anyhow::Result<()> {
     };
     // The harness CLIs this runner offers, probed once before any work is
     // admitted: a CLI that is not there must not be routed `requires:` work.
-    let harness_clis: Vec<(String, Option<String>)> =
+    let harness_clis: Vec<escurel_runner_core::runtime::HarnessSpec> =
         escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow)
             .into_iter()
-            .map(|name| {
-                let cli = harness_cli(&config, &name);
-                (name, cli)
-            })
+            .map(|name| harness_spec(&config, name))
             .collect();
     if let (Some(gate), Some(source)) = (gate.as_ref(), tokens.as_ref()) {
         gate.apply_probe(&escurel_runner_core::runtime::probe_harnesses(&harness_clis).await);
@@ -4792,8 +4789,8 @@ async fn schedule_loop(
 struct Registration {
     runner_id: String,
     holder: Option<String>,
-    /// `(harness, cli)`: the CLI `--version` is probed on; `None` in-process.
-    clis: Vec<(String, Option<String>)>,
+    /// The harnesses offered, with the CLI `--version` is probed on.
+    clis: Vec<escurel_runner_core::runtime::HarnessSpec>,
     labels: Vec<String>,
     max_concurrent: u64,
 }
@@ -4870,6 +4867,21 @@ const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has
     or escurel:admin — give it a runner credential (ESCUREL_RUNNER_TOKEN / \
     ESCUREL_RUNNER_TOKEN_FILE with the escurel:runner role; no signing key needed, the gateway \
     mints its per-run tokens) or an admin one, or make it a minting runner";
+
+/// What the runtime page says about harness `name`. Its inject support is
+/// asked of the harness itself, built the way a run builds it, for the CLI
+/// harnesses only: building an in-process one (gemini without its key) can
+/// end the process, and none of them holds a live session to inject into.
+fn harness_spec(config: &RunnerConfig, name: String) -> escurel_runner_core::runtime::HarnessSpec {
+    let cli = harness_cli(config, &name);
+    let supports_inject =
+        cli.is_some() && build_harness_named(config, &name).is_some_and(|h| h.supports_inject());
+    escurel_runner_core::runtime::HarnessSpec {
+        name,
+        cli,
+        supports_inject,
+    }
+}
 
 /// The CLI a harness runs, for its `--version` probe; `None` for one that
 /// runs in process (gemini, the OpenAI-compatible presets, delegate).

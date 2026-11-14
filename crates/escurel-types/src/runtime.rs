@@ -232,6 +232,12 @@ pub struct RuntimeHarness {
     /// Why the probe failed (admin view only), when `available` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probe_error: Option<String>,
+    /// Whether a live run on this harness takes a human's message
+    /// (`inject_into_run`), as the harness itself declares it. `None` on a
+    /// page an older runner wrote: unknown, not "no" — an inject there is
+    /// still answered by the runner (`unsupported` when it cannot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_inject: Option<bool>,
 }
 
 impl Default for RuntimeHarness {
@@ -241,6 +247,7 @@ impl Default for RuntimeHarness {
             version: None,
             available: true,
             probe_error: None,
+            supports_inject: None,
         }
     }
 }

@@ -89,6 +89,28 @@ describe('the Runtimes view rows', () => {
     );
   });
 
+  it('say in words which harness takes a message mid-run, leaving out the ones nobody declared', () => {
+    const [row] = runtimeRows(
+      [
+        {
+          ...online,
+          harnesses: [
+            { name: 'echo', version: null, supports_inject: true },
+            { name: 'claude', version: null, supports_inject: true },
+            { name: 'codex', version: null, supports_inject: false },
+            { name: 'agy', version: null },
+          ],
+        },
+      ],
+      now,
+    );
+    expect(row?.tooltip).toContain('Takes a message while it runs: echo, claude');
+    expect(row?.tooltip).toContain('Cannot take a message while it runs: codex');
+    expect(row?.tooltip).not.toContain('agy,');
+    const [old] = runtimeRows([online], now);
+    expect(old?.tooltip).not.toContain('message while it runs');
+  });
+
   it('word a stopped runner and one that never reported', () => {
     const rows = runtimeRows(
       [
@@ -184,6 +206,7 @@ describe('which runtime holds an event', () => {
       runtime: 'build-box',
       pageId: stale.page_id,
       until: claim.expires_at,
+      harnesses: [{ name: 'codex', supports_inject: undefined }],
     });
   });
 

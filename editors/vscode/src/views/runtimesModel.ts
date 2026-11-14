@@ -55,6 +55,18 @@ const unavailableLines = (r: Runtime): string[] =>
         }, so work that requires it goes to another runtime`,
     );
 
+/** Which harness a live run can be steered on (#827), as the runner declared it; undeclared is left out. */
+const injectLines = (r: Runtime): string[] => {
+  const named = (takes: boolean) =>
+    r.harnesses.filter((h) => h.supports_inject === takes).map((h) => cleanText(h.name, 64));
+  const yes = named(true);
+  const no = named(false);
+  return [
+    ...(yes.length ? [`Takes a message while it runs: ${yes.join(', ')}`] : []),
+    ...(no.length ? [`Cannot take a message while it runs: ${no.join(', ')}`] : []),
+  ];
+};
+
 const labelWords = (r: Runtime): string =>
   r.labels.length ? r.labels.map((l) => cleanText(l, 64)).join(', ') : 'no labels';
 
@@ -110,6 +122,7 @@ export function runtimeRows(runtimes: Runtime[], now: Date = new Date()): Runtim
           statusLine(r, status, now),
           `Harnesses: ${harnessWords(r)}`,
           ...unavailableLines(r),
+          ...injectLines(r),
           `Labels: ${labelWords(r)}`,
           ...(r.max_concurrent !== null
             ? [`At most ${plural(r.max_concurrent, 'run')} at once`]
@@ -155,13 +168,20 @@ export interface HeldBy {
   pageId?: string;
   /** RFC 3339: when the lease lapses unless renewed. */
   until: string;
+  /** The holding runtime's harnesses, so the run's own can be asked whether it takes an inject. */
+  harnesses?: { name: string; supports_inject?: boolean | null }[];
 }
 
 export function heldBy(claim: EventClaim | undefined, runtimes: Runtime[]): HeldBy | undefined {
   if (!claim) return undefined;
   const r = runtimes.find((x) => x.claim_holder && x.claim_holder === claim.holder);
   if (r)
-    return { runtime: cleanText(r.runner_id, 120), pageId: r.page_id, until: claim.expires_at };
+    return {
+      runtime: cleanText(r.runner_id, 120),
+      pageId: r.page_id,
+      until: claim.expires_at,
+      harnesses: r.harnesses.map((h) => ({ name: h.name, supports_inject: h.supports_inject })),
+    };
   // Holders are visible (an admin's read) but none matches: a runner that never registered.
   return runtimes.some((x) => x.claim_holder)
     ? { runtime: cleanText(claim.holder, 160), until: claim.expires_at }

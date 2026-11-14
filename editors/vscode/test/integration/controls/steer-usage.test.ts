@@ -89,8 +89,13 @@ suite('steering, transcript and usage against the real stack', () => {
     });
     const started = await runStarted(api, trigger.event_id);
     const runId = started.run_id!;
-    const live = await viewFor(api, runId, (v) => v.status === 'running' && !!v.steer);
-    assert.deepEqual(live.steer, { available: true }, 'an echo run takes messages');
+    // The offer comes from the runtime holding the run (#827), once its page and the claim are read.
+    const live = await viewFor(
+      api,
+      runId,
+      (v) => v.status === 'running' && !!v.steer && !(v.steer.available && v.steer.hint),
+    );
+    assert.deepEqual(live.steer, { available: true }, 'the runtime says an echo run takes messages');
 
     // A message the gateway would refuse is refused before anything is sent.
     assert.deepEqual(await api.runs.steer(runId, '   '), {
