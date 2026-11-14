@@ -83,6 +83,17 @@ impl AclCaller<'_> {
         (self.is_admin || self.runner) && !self.is_machine()
     }
 
+    /// Whether this caller may write a `runtime` instance whose stored page is
+    /// `current` (`None`: not written yet). A runner keeps its OWN page (#828):
+    /// it creates one, or updates one it last wrote; another subject's page is
+    /// not its to overwrite. Admins are decided before this is asked.
+    #[must_use]
+    pub fn may_write_runtime(&self, current: Option<&crate::ExpandedPage>) -> bool {
+        self.runner
+            && self.may_keep_books()
+            && current.is_none_or(|page| page.last_written_by.as_deref() == Some(self.subject))
+    }
+
     /// Whether this caller's agent profile forbids writing `page_id`.
     #[must_use]
     pub fn agent_write_denied(&self, page_id: &str) -> bool {
@@ -631,7 +642,10 @@ impl Indexer {
         // The runner keeps its own `runtime` page (#828): the one admin-only
         // write a runner credential holds, and only for a page that is a
         // runtime instance both by path and by what it declares.
-        if caller.runner && caller.may_keep_books() && is_runtime_instance(page_id, &parsed) {
+        if caller.may_keep_books()
+            && is_runtime_instance(page_id, &parsed)
+            && caller.may_write_runtime(self.expand(page_id, None, None).await?.as_ref())
+        {
             return Ok(true);
         }
         // An admin-only system skill (`agent`) is authority: neither its page,

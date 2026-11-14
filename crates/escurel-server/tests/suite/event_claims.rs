@@ -634,3 +634,57 @@ async fn a_runner_role_keeps_its_books_and_nothing_more() {
         "{body}"
     );
 }
+
+/// A runner credential keeps ITS OWN `runtime` page: it may create one, and
+/// update one it last wrote, but never overwrite another runner's — that would
+/// let one runner rewrite another's harnesses, labels or inject support. An
+/// admin may write any.
+#[tokio::test]
+async fn a_runner_writes_only_its_own_runtime_page() {
+    let p = gateway_with_customer().await;
+    let hq = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let laptop = p.mint_token_with_groups(TENANT, "runner:laptop", &["escurel:runner"], false);
+    let page = |id: &str, note: &str| {
+        format!(
+            "---\nkind: instance\nskill: runtime\nid: {id}\nrunner_id: \"{id}\"\n\
+             harnesses: [{{\"name\": \"echo\"}}]\n---\n# {id}\n\n{note}\n"
+        )
+    };
+    let write = |token: String, id: &'static str, note: &'static str| {
+        let p = &p;
+        async move {
+            rpc(
+                p,
+                &token,
+                "update_page",
+                json!({ "page_id": format!("markdown/instances/runtime/{id}.md"),
+                        "content": page(id, note) }),
+            )
+            .await
+        }
+    };
+    let landed = |body: &Value| {
+        body.get("error").is_none()
+            && body["result"]["isError"] != true
+            && body["result"]["structuredContent"]["ok"] == true
+    };
+
+    let body = write(hq.clone(), "hq", "first").await;
+    assert!(landed(&body), "it creates its own page: {body}");
+    let body = write(hq.clone(), "hq", "again").await;
+    assert!(landed(&body), "and updates it: {body}");
+    let body = write(laptop.clone(), "hq", "hijack").await;
+    assert!(
+        !landed(&body),
+        "another runner's page is not its to write: {body}"
+    );
+    let body = write(laptop.clone(), "laptop", "mine").await;
+    assert!(landed(&body), "{body}");
+    let body = write(admin(&p), "hq", "by an admin").await;
+    assert!(landed(&body), "an admin writes any: {body}");
+    let body = write(hq, "hq", "after the admin").await;
+    assert!(
+        !landed(&body),
+        "the page is no longer the runner's once someone else wrote it: {body}"
+    );
+}

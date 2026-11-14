@@ -265,7 +265,10 @@ credential**, each with a narrow authority of its own. Unlike
   / `mint_run_token` (admin-scope tools, granted to this role by name), files
   the runner's own records (`run:` / `sched:` / `lint-` ids, `kind: system`,
   `escurel:` labels, `report_runner_status`, `put_run_transcript`) and writes
-  its own `runtime` instance. Everything else follows its ordinary ACL: no
+  its own `runtime` instance — it creates one, or updates one it last wrote;
+  another subject's runtime page (another runner's, or one an admin edited) is
+  refused, so one runner cannot rewrite another's harnesses or labels. Replicas
+  sharing one credential share its pages. Everything else follows its ordinary ACL: no
   other page write, no admin tool, `list_runtimes` without the admin detail.
   `whoami` answers `service: "runner"`. An out-of-cluster runner holds only
   this and **no signing key**: the gateway mints each run's token
