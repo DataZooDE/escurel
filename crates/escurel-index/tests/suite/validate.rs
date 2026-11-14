@@ -1050,7 +1050,7 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
     let clean = "---\nkind: instance\nskill: agent\nid: a\nharness: echo\nmodel: m\n\
         skills: [\"[[skill::meeting]]\", [[skill::customer]]]\n\
         scopes:\n  tools: [expand]\n  write: [\"markdown/instances/meeting/*\"]\n\
-        max_concurrent: 2\n---\n# a\n";
+        max_concurrent: 2\ntoken_epoch: 1790000000\n---\n# a\n";
     let issues = h
         .indexer
         .validate(Some("markdown/instances/agent/a.md"), clean)
@@ -1062,7 +1062,7 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
     );
 
     let broken = "---\nkind: instance\nskill: agent\nid: b\nharness: nope\nmodel: \"\"\n\
-        skills: meeting\nscopes:\n  tools: search\n  read: [x]\nmax_concurrent: 0\n---\n# b\n";
+        skills: meeting\nscopes:\n  tools: search\n  read: [x]\nmax_concurrent: 0\ntoken_epoch: soon\n---\n# b\n";
     let issues = h
         .indexer
         .validate(Some("markdown/instances/agent/b.md"), broken)
@@ -1075,6 +1075,7 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
         "agent_skills_invalid",
         "agent_scopes_invalid",
         "agent_max_concurrent_invalid",
+        "agent_token_epoch_invalid",
     ] {
         assert!(got.contains(&code), "{code} missing from {got:?}");
     }

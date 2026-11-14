@@ -36,12 +36,13 @@ pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
-    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, PurgeEventsRequest,
-    PurgeEventsResponse, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest,
-    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
-    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
-    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
-    UsageReportRequest, UsageReportResponse, UsageTotals,
+    HealthResponse, IssueAgentTokenRequest, IssueAgentTokenResponse, MigrateKindReport,
+    MigrateKindRequest, PackManifest, PurgeEventsRequest, PurgeEventsResponse, QuotaGetRequest,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
+    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
+    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
+    TenantUpdateRequest, TenantUpdateResponse, UsageReportRequest, UsageReportResponse,
+    UsageTotals,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -233,6 +234,20 @@ impl AdminClient {
             }
         }
         self.transport.call_typed("usage_report", args).await
+    }
+
+    /// Issue a revocable bearer for an external agent that runs as the agent
+    /// profile `req.agent` (`issue_agent_token`, #829). Admin only; revoke it
+    /// with the agent page's `token_epoch`.
+    pub async fn issue_agent_token(
+        &self,
+        req: IssueAgentTokenRequest,
+    ) -> Result<IssueAgentTokenResponse, Error> {
+        let mut args = json!({ "agent": req.agent });
+        if req.ttl_secs > 0 {
+            args["ttl_secs"] = json!(req.ttl_secs);
+        }
+        self.transport.call_typed("issue_agent_token", args).await
     }
 
     /// Attach an external read-only source to the gateway's tenant. The

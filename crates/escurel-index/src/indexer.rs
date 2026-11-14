@@ -1853,10 +1853,34 @@ impl Indexer {
                 ))?
             };
             if let Some(page_id) = existing {
+                let stored = if page_id == row.page_id {
+                    self.read_page_markdown(&page_id).await?
+                } else {
+                    None
+                };
+                // Still byte-equal to an earlier shipped version: nobody edited it, so it gets the
+                // current one (a tenant edit is theirs and is kept).
+                if let Some(stored) = stored.as_deref()
+                    && stored != row.markdown
+                    && row
+                        .previous_sha256
+                        .contains(&format!("{:x}", Sha256::digest(stored.as_bytes())).as_str())
+                {
+                    let key = Key::new(self.tenant.as_str(), row.page_id.to_owned())?;
+                    self.store
+                        .write(&key, Bytes::from_static(row.markdown.as_bytes()))
+                        .await?;
+                    self.update_page(row.page_id, row.markdown).await?;
+                    tracing::info!(
+                        tenant = %self.tenant.as_str(),
+                        skill = row.id,
+                        "a system skill page as an earlier release shipped it was upgraded"
+                    );
+                    installed = true;
+                    continue;
+                }
                 if row.admin_only {
-                    let canonical = page_id == row.page_id
-                        && self.read_page_markdown(&page_id).await?.as_deref()
-                            == Some(row.markdown);
+                    let canonical = stored.as_deref() == Some(row.markdown);
                     if !canonical {
                         tracing::warn!(
                             tenant = %self.tenant.as_str(),

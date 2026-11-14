@@ -397,6 +397,97 @@ pub(super) async fn tool_mint_run_token(
     }))
 }
 
+/// `issue_agent_token`'s lifetime: long enough for a configured harness, bounded
+/// so a forgotten one lapses; revocation is the `token_epoch`, not the expiry.
+const AGENT_DEFAULT_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+const AGENT_MIN_TTL_SECS: u64 = 60 * 60;
+const AGENT_MAX_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+
+#[derive(Deserialize)]
+pub(super) struct IssueAgentTokenArgs {
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+/// `issue_agent_token` (#829): an admin hands an EXTERNAL agent (Claude Code,
+/// Codex, Multica) a revocable bearer that runs as the agent profile `agent`:
+/// `sub: agent:<id>`, the admin as `act.sub`, `escurel:agent` plus the write
+/// groups of the skills the agent lists, and the `agent` claim — so its
+/// `scopes.tools` / `scopes.write` confine it at dispatch exactly as they do a
+/// run, and `/ws`, `/ingest` and `/blob` refuse it. No run claims, no skill.
+/// Revoked by the agent page's `token_epoch`. The token is returned once and
+/// never logged.
+pub(super) async fn tool_issue_agent_token(
+    state: &AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    const TOOL: &str = "issue_agent_token";
+    let a: IssueAgentTokenArgs = parse_args(args, TOOL)?;
+    let guard = MintGuard::check(TOOL, state, &caller)?;
+    if !caller.is_admin {
+        return Err(JsonRpcError::forbidden(format!(
+            "{TOOL}: only an admin issues agent tokens"
+        )));
+    }
+    let ttl = guard.ttl(
+        a.ttl_secs,
+        AGENT_DEFAULT_TTL_SECS,
+        AGENT_MIN_TTL_SECS..=AGENT_MAX_TTL_SECS,
+    )?;
+    let agent = a.agent.trim();
+    let profile = indexer
+        .agent_profile(agent)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!(
+                "{TOOL}: no usable agent page `{agent}` in this tenant (missing or archived)"
+            ))
+            .with_code("agent_unknown", false)
+        })?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // An epoch past the next second is a malformed page (it would revoke every token ever
+    // issued, this one too): say so rather than hand out a token that is refused at once.
+    if profile.token_epoch.is_some_and(|epoch| epoch > now + 1) {
+        return Err(JsonRpcError::invalid_params(format!(
+            "{TOOL}: agent `{agent}` has a `token_epoch` in the future; fix the page (it is Unix \
+             seconds)"
+        ))
+        .with_code("agent_token_epoch_invalid", false));
+    }
+    let mut groups: Vec<String> = Vec::new();
+    for skill in &profile.skills {
+        for g in indexer
+            .skill_write_groups(skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+        {
+            if !groups.contains(&g) {
+                groups.push(g);
+            }
+        }
+    }
+    let token = guard
+        .signer
+        .mint_external_agent(caller.subject, agent, ttl, &groups, profile.token_epoch)
+        .map_err(|e| guard.sign_error(e))?;
+    let expires = rfc3339(SystemTime::now() + Duration::from_secs(ttl));
+    // The token itself is never logged: who issued what, for how long, is.
+    tracing::info!(subject = %caller.subject, agent = %agent, ttl, "issue_agent_token: issued");
+    Ok(json!({
+        "token": token,
+        "agent": agent,
+        "subject": format!("agent:{agent}"),
+        "expires_at": expires,
+    }))
+}
+
 /// Close every gateway-minted run whose token has lapsed with no terminal:
 /// `run-finished { status: "expired" }`, first-writer-wins on the id. The
 /// set is read from the events (H4), so it survives a restart.

@@ -55,6 +55,7 @@ const EXPECTED: &[&str] = &[
     "list_runtimes:deterministic",
     "mint_agent_token:orchestration",
     "mint_run_token:orchestration",
+    "issue_agent_token:orchestration",
     "get_run_tool_calls:deterministic",
     "list_lineage:deterministic",
     "close_session:orchestration",

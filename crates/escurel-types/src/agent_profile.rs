@@ -56,6 +56,10 @@ pub struct AgentProfile {
     /// CLOSED: the runner refuses this agent's runs (visibly, naming the key)
     /// rather than running them uncapped.
     pub max_concurrent_invalid: bool,
+    /// `token_epoch:` (Unix seconds, #829): every token for this agent issued
+    /// before it is refused (`agent_token_revoked`). A value that is not a
+    /// whole number revokes everything: fail closed.
+    pub token_epoch: Option<u64>,
 }
 
 impl AgentProfile {
@@ -86,6 +90,21 @@ impl AgentProfile {
             max_concurrent_invalid: fm
                 .get("max_concurrent")
                 .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0)),
+            token_epoch: fm
+                .get("token_epoch")
+                .map(|v| v.as_u64().unwrap_or(u64::MAX)),
+        }
+    }
+
+    /// Whether a token for this agent issued at `issued_at` (its `iat`) still
+    /// stands: issued at or after [`Self::token_epoch`]. A token with no `iat`
+    /// cannot be placed against the epoch, so it never stands.
+    #[must_use]
+    pub fn token_stands(&self, issued_at: Option<u64>) -> bool {
+        match (issued_at, self.token_epoch) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(iat), Some(epoch)) => iat >= epoch,
         }
     }
 

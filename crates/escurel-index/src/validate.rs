@@ -810,6 +810,21 @@ fn check_agent_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
             "`max_concurrent:` must be a positive whole number",
         ));
     }
+    // Revocation (#829): a value that is not Unix seconds would revoke nothing the reader
+    // expects, so it is an error rather than a silently ignored key.
+    if fields
+        .get("token_epoch")
+        .is_some_and(|v| v.as_u64().is_none())
+    {
+        issues.push(
+            error(
+                "agent_token_epoch_invalid",
+                "token_epoch",
+                "`token_epoch:` is Unix seconds: tokens for this agent issued before it are refused",
+            )
+            .with_suggestion("`escurel agent token revoke <id>` sets it"),
+        );
+    }
     issues
 }
 

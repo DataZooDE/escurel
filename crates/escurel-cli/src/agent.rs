@@ -453,6 +453,120 @@ pub async fn usage(client: &escurel_client::AdminClient, a: UsageArgs) -> Result
     Ok(serde_json::to_value(resp)?)
 }
 
+/// Agent profiles (#823) as external agents use them (#829).
+#[derive(Subcommand, Debug)]
+pub enum AgentCmd {
+    /// Tokens for an agent that runs outside escurel (Claude Code, Codex, Multica).
+    #[command(subcommand)]
+    Token(AgentTokenCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentTokenCmd {
+    /// Issue a bearer that runs as the agent profile, confined by its scopes
+    /// (`issue_agent_token`, admin). The token is printed once: store it where
+    /// the harness reads it.
+    Issue {
+        /// The agent profile id (`markdown/instances/agent/<agent>.md`).
+        agent: String,
+        /// Token life: seconds, or a number with `h` / `d` (`12h`, `30d`).
+        /// Default 30d, at most 90d.
+        #[arg(long, value_parser = parse_ttl)]
+        ttl: Option<u64>,
+    },
+    /// Revoke every token issued so far for the agent: sets the page's
+    /// `token_epoch` to the next second through `update_page` (admin). The
+    /// next call with an older token is `agent_token_revoked`.
+    Revoke {
+        /// The agent profile id.
+        agent: String,
+    },
+}
+
+/// `3600`, `12h`, `30d` → seconds.
+fn parse_ttl(raw: &str) -> Result<u64, String> {
+    let raw = raw.trim();
+    let (num, unit) = match raw.char_indices().last() {
+        Some((i, 'h')) => (&raw[..i], 3600),
+        Some((i, 'd')) => (&raw[..i], 86_400),
+        Some((i, 's')) => (&raw[..i], 1),
+        _ => (raw, 1),
+    };
+    num.parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(unit))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("`{raw}` is not a duration (seconds, or e.g. `12h`, `30d`)"))
+}
+
+/// `agent token issue` — an admin tool, so `main` dials it with the admin client.
+pub async fn issue_agent_token(
+    client: &escurel_client::AdminClient,
+    agent: String,
+    ttl: Option<u64>,
+) -> Result<Value> {
+    let resp = client
+        .issue_agent_token(escurel_client::IssueAgentTokenRequest {
+            agent,
+            ttl_secs: ttl.unwrap_or(0),
+        })
+        .await?;
+    Ok(serde_json::to_value(resp)?)
+}
+
+/// `agent token revoke`: rewrite the agent page with `token_epoch` = the next
+/// second, so every token issued up to now (this second included) is refused
+/// and one issued after it stands. Guarded by the page's version, so a
+/// concurrent edit is refused rather than overwritten.
+async fn revoke_agent_tokens(client: &Client, agent: String) -> Result<Value> {
+    let page_id = escurel_types::agent_profile::agent_page_id(&agent);
+    let page = client
+        .expand(escurel_client::ExpandRequest {
+            page_id: page_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let (Some(_), Some(fm)) = (page.page.as_ref(), page.frontmatter.as_object()) else {
+        bail!("no agent page `{page_id}` (or you may not read it)");
+    };
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+        + 1;
+    let mut fm = fm.clone();
+    fm.insert("token_epoch".to_owned(), json!(epoch));
+    // JSON values are YAML flow scalars, so every key is written as JSON: no quoting rules to get
+    // wrong for a scope glob or a wikilink.
+    let mut content = String::from("---\n");
+    for (key, value) in &fm {
+        content.push_str(&format!("{key}: {value}\n"));
+    }
+    content.push_str("---\n");
+    content.push_str(&page.body);
+    let resp = client
+        .update_page(UpdatePageRequest {
+            page_id: page_id.clone(),
+            content,
+            base_version: page.version.clone(),
+            ..Default::default()
+        })
+        .await?;
+    if !resp.ok {
+        let issues: Vec<String> = resp
+            .issues
+            .iter()
+            .map(|i| format!("{}: {}", i.code, i.message))
+            .collect();
+        bail!("the agent page was not updated: {}", issues.join("; "));
+    }
+    Ok(json!({
+        "agent": agent,
+        "page_id": page_id,
+        "token_epoch": epoch,
+        "new_version": opt(&resp.new_version),
+    }))
+}
+
 /// Runner processes that registered themselves (#818).
 #[derive(Subcommand, Debug)]
 pub enum RuntimeCmd {
@@ -676,6 +790,12 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Run(c) => run_cmd(client, c).await,
+        Command::Agent(AgentCmd::Token(AgentTokenCmd::Revoke { agent })) => {
+            revoke_agent_tokens(client, agent).await
+        }
+        Command::Agent(AgentCmd::Token(AgentTokenCmd::Issue { .. })) => {
+            unreachable!("agent token issue handled in main (admin client)")
+        }
         Command::Runtime(RuntimeCmd::List) => {
             Ok(serde_json::to_value(client.list_runtimes().await?)?)
         }

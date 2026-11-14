@@ -382,6 +382,8 @@ async fn mcp_inner(
     let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
     // The built-in service role (#828) the credential holds for itself.
     let service = auth_ctx.as_ref().and_then(|c| c.service);
+    // When the token was issued: an agent token issued before its agent's `token_epoch` is revoked.
+    let issued_at = auth_ctx.as_ref().and_then(|c| c.issued_at);
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -402,12 +404,14 @@ async fn mcp_inner(
             // a harness never sees a tool every call to which is refused.
             Some(id) => {
                 let ix = state.indexer.as_ref().map(IndexerHandle::current);
-                resolve_agent(ix.as_deref(), id).await.map(|agent| {
-                    filter_tools_list(schema::tools_list_payload_for(role, service), |name| {
-                        restriction.as_ref().is_none_or(|r| r.contains(name))
-                            && agent.allows_tool(name)
+                resolve_agent(ix.as_deref(), id, issued_at)
+                    .await
+                    .map(|agent| {
+                        filter_tools_list(schema::tools_list_payload_for(role, service), |name| {
+                            restriction.as_ref().is_none_or(|r| r.contains(name))
+                                && agent.allows_tool(name)
+                        })
                     })
-                })
             }
             None => Ok(filter_tools_list(
                 schema::tools_list_payload_for(role, service),
@@ -465,6 +469,7 @@ async fn mcp_inner(
                 restriction.as_ref(),
                 bridge,
                 service,
+                issued_at,
                 req.params,
             ))
             .catch_unwind()
@@ -1077,9 +1082,14 @@ fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
 /// from the agent's own page. Every way of not finding it — no indexer, no
 /// such page, a read error — refuses the call with `agent_unknown`: a token
 /// whose narrowing cannot be established may do nothing.
+///
+/// The page is read on every call, so its `token_epoch` (#829) revokes from the
+/// next call on: a token issued before it — or one with no `iat` to place
+/// against it — is refused `agent_token_revoked`.
 async fn resolve_agent(
     indexer: Option<&Indexer>,
     agent_id: &str,
+    issued_at: Option<u64>,
 ) -> Result<escurel_types::agent_profile::AgentProfile, JsonRpcError> {
     let found = match indexer {
         Some(ix) => ix.agent_profile(agent_id).await.unwrap_or_else(|e| {
@@ -1088,7 +1098,7 @@ async fn resolve_agent(
         }),
         None => None,
     };
-    found.ok_or_else(|| {
+    let agent = found.ok_or_else(|| {
         JsonRpcError {
             code: -32001,
             message: format!(
@@ -1098,7 +1108,19 @@ async fn resolve_agent(
             data: None,
         }
         .with_code("agent_unknown", false)
-    })
+    })?;
+    if !agent.token_stands(issued_at) {
+        return Err(JsonRpcError {
+            code: -32001,
+            message: format!(
+                "this token for agent `{agent_id}` was revoked (issued before the agent's \
+                 `token_epoch`, or carries no `iat`); ask an admin for a new one"
+            ),
+            data: None,
+        }
+        .with_code("agent_token_revoked", false));
+    }
+    Ok(agent)
 }
 
 /// Tool surface a ducklake reader must reject outright when the
@@ -1154,6 +1176,7 @@ async fn dispatch_tools_call(
     restriction: Option<&std::collections::BTreeSet<String>>,
     bridge: bool,
     service: Option<escurel_auth::ServiceRole>,
+    issued_at: Option<u64>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1206,7 +1229,7 @@ async fn dispatch_tools_call(
     // resolve here may call nothing at all.
     let agent_profile = match agent_claim {
         None => None,
-        Some(id) => Some(resolve_agent(current_indexer.as_deref(), id).await?),
+        Some(id) => Some(resolve_agent(current_indexer.as_deref(), id, issued_at).await?),
     };
     // Deterministic per-instance ACL caller (escurel-index). The admin
     // role bypasses owner-visibility; a missing role is dev/on-host mode
@@ -1612,6 +1635,9 @@ async fn dispatch_tools_call(
         }
         "mint_run_token" => {
             tools_mint::tool_mint_run_token(state, indexer, caller, params.arguments).await
+        }
+        "issue_agent_token" => {
+            tools_mint::tool_issue_agent_token(state, indexer, caller, params.arguments).await
         }
         "get_run_tool_calls" => {
             tools_tool_calls::tool_get_run_tool_calls(

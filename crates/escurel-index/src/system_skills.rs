@@ -22,6 +22,11 @@ pub struct SystemSkill {
     pub markdown: &'static str,
     /// Page and instances writable by the admin role only.
     pub admin_only: bool,
+    /// SHA-256 (hex) of every earlier markdown escurel shipped for this row. A
+    /// tenant whose page is still byte-equal to one of them never edited it, so
+    /// it is upgraded to [`Self::markdown`]; any other page is the tenant's own
+    /// and is kept. Add the outgoing hash here whenever the markdown changes.
+    pub previous_sha256: &'static [&'static str],
 }
 
 /// Skill id of agent profiles (#823): the one the agent-profile parser keys on.
@@ -36,18 +41,22 @@ pub const SYSTEM_SKILLS: &[SystemSkill] = &[
         // Operators append tenant guidance to it; its sections are protected
         // by the meta-skill rules instead.
         admin_only: false,
+        previous_sha256: &[],
     },
     SystemSkill {
         id: AGENT_SKILL_ID,
         page_id: "markdown/skills/agent.md",
         markdown: include_str!("agent_skill.md"),
         admin_only: true,
+        // v2026.11.13 (before `token_epoch`, #829).
+        previous_sha256: &["e7b9e157096c11d4e30f0a28e3e12b414d726457fee4407bd7aec7937f072f98"],
     },
     SystemSkill {
         id: escurel_types::runtime::RUNTIME_SKILL,
         page_id: "markdown/skills/runtime.md",
         markdown: include_str!("runtime_skill.md"),
         admin_only: true,
+        previous_sha256: &[],
     },
 ];
 

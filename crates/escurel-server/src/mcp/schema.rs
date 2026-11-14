@@ -938,6 +938,30 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "issue_agent_token",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Issue a revocable bearer for an EXTERNAL agent (Claude Code, Codex, Multica) that \
+                 runs as the agent profile `agent`: `sub: agent:<agent>`, you as `act.sub`, \
+                 `escurel:agent` plus the write groups of the skills the agent lists, and the \
+                 `agent` claim — so the agent page's `scopes.tools` / `scopes.write` confine it on \
+                 every call, and `/ws`, `/ingest` and `/blob` refuse it. No run or skill claim. \
+                 Revoke every token issued so far by setting the page's `token_epoch` (`escurel \
+                 agent token revoke`): the next call is `agent_token_revoked`. The token is \
+                 returned once; store it where the harness reads it. Admin only, never from a run \
+                 or agent token (`agent_scope_denied`); an unknown or archived agent is \
+                 `agent_unknown`; a gateway with no signing key is `unsupported`.",
+            json!({
+                "type": "object",
+                "required": ["agent"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." },
+                    "ttl_secs": { "type": "integer", "minimum": 3600, "maximum": 7776000, "description": "Token life; default 2592000 (30 days)." }
+                }
+            }),
+        ),
+        tool_entry(
             "report_progress",
             Execution::Orchestration,
             Scope::Agent,
@@ -2592,6 +2616,12 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "token": { "type": "string" },
             "run_id": { "type": "string" },
             "root_event_id": { "type": "string" },
+            "subject": { "type": "string" },
+            "expires_at": { "type": "string" }
+        })),
+        "issue_agent_token" => obj(json!({
+            "token": { "type": "string" },
+            "agent": { "type": "string" },
             "subject": { "type": "string" },
             "expires_at": { "type": "string" }
         })),

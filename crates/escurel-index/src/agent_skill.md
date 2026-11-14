@@ -4,7 +4,7 @@ id: agent
 description: An agent profile — the identity, harness, model and least-privilege
   scopes a runner's per-run token carries when it runs one of the listed skills.
 required_frontmatter: []
-optional_frontmatter: [harness, model, skills, scopes, max_concurrent]
+optional_frontmatter: [harness, model, skills, scopes, max_concurrent, token_epoch]
 instance_acl: false
 acl:
   read: [public]
@@ -38,6 +38,10 @@ so it is never something a run (or an ordinary member) can widen.
   the token's skill confinement still apply.
 - `max_concurrent` — how many runs of this agent one runner executes at
   once (default: unbounded).
+- `token_epoch` — Unix seconds. Every token for this agent issued before it
+  is refused (`agent_token_revoked`) from the next call on: the revocation of
+  the external tokens `issue_agent_token` hands out, and of run tokens too.
+  `escurel agent token revoke <id>` sets it to the next second.
 
 ## Choosing an agent for a run
 
@@ -50,11 +54,19 @@ run — the runner refuses it rather than falling back to a broader token.
 
 ## Which runner can run an agent
 
-Only a **minting** runner — one holding the signing key
-(`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`). A runner
-on a static `ESCUREL_RUNNER_TOKEN` cannot mint a token as the agent, so every
-run of a skill naming an agent fails there (dead-letters) rather than writing
-with the runner's own token.
+A **minting** runner — one holding the signing key
+(`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`) — or a
+runner on its own credential (`escurel:runner` or admin) whose gateway has a
+signing key: it gets each run's token from the gateway (`mint_run_token`).
+Where neither can mint a token as the agent, every run of a skill naming an
+agent fails (dead-letters) rather than writing with the runner's own token.
+
+## External agents
+
+An admin issues a token for an agent that runs outside escurel (Claude Code,
+Codex, Multica) with `escurel agent token issue <id>` (`issue_agent_token`):
+`sub: agent:<id>`, the issuing admin as `act.sub`, the same scopes as a run.
+`escurel agent token revoke <id>` sets `token_epoch`.
 
 ## Enforcement
 

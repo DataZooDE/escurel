@@ -87,6 +87,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ),
     ("list_runtimes", Agent(&["runtime", "list"])),
     ("mint_agent_token", Agent(&["run", "mint-token"])),
+    ("issue_agent_token", Agent(&["agent", "token", "issue"])),
     (
         "mint_run_token",
         Excluded("runner bookkeeping: a runner with no signing key gets its run tokens here"),

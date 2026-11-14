@@ -17,6 +17,7 @@
 //! its *own* directory, so `tests/suite.rs` would look for `tests/x.rs`.
 
 mod cli_admin_e2e;
+mod cli_agent_token_e2e;
 mod cli_e2e;
 mod cli_ingest_e2e;
 mod cli_kindfix_e2e;

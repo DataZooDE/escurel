@@ -13,6 +13,7 @@
 //!   escurel link neighbours <page_id>
 //!   escurel page blob|snapshots <page_id>
 //!   escurel event capture|inbox|list|assign
+//!   escurel agent token issue|revoke <agent>
 //!   escurel query run <query_id> --params '{…}'
 //!   escurel chat append|list
 //!   escurel session open|apply|close
@@ -86,6 +87,9 @@ enum Command {
     /// mint-token (a person's bearer).
     #[command(subcommand)]
     Run(agent::RunCmd),
+    /// Agent profiles for external agents: issue and revoke their tokens.
+    #[command(subcommand)]
+    Agent(agent::AgentCmd),
     /// Registered runner processes (runtimes): harnesses, labels, online/stale.
     #[command(subcommand)]
     Runtime(agent::RuntimeCmd),
@@ -170,6 +174,10 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Run(agent::RunCmd::Usage(args)) => {
             let client = AdminClient::connect(&cli.server, token).await?;
             agent::usage(&client, args).await?
+        }
+        Command::Agent(agent::AgentCmd::Token(agent::AgentTokenCmd::Issue { agent, ttl })) => {
+            let client = AdminClient::connect(&cli.server, token).await?;
+            agent::issue_agent_token(&client, agent, ttl).await?
         }
         Command::Workflow(cmd) => {
             let client = Client::connect(&cli.server, token).await?;

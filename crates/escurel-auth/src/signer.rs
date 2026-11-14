@@ -441,6 +441,43 @@ impl Signer {
         self.sign(&claims)
     }
 
+    /// Mint a bearer for an **external agent** (#829): a harness outside
+    /// escurel (Claude Code, Codex, Multica) acting as the agent profile
+    /// `agent_id`, issued by `issuer_subject` (an admin, kept as `act.sub`).
+    /// `escurel:agent` plus `groups` (privileged names stripped, as for every
+    /// agent token) and the [`AGENT_CLAIM`], so the gateway enforces the agent
+    /// page's scopes; no run and no skill claim — it belongs to no run.
+    ///
+    /// `iat` is `max(now, token_epoch)`: an agent revoked within this second
+    /// (`token_epoch` = the next second) still gets a token that stands.
+    ///
+    /// # Errors
+    /// When signing fails, or `agent_id` cannot be an unambiguous subject.
+    pub fn mint_external_agent(
+        &self,
+        issuer_subject: &str,
+        agent_id: &str,
+        ttl_secs: u64,
+        groups: &[String],
+        token_epoch: Option<u64>,
+    ) -> Result<String, SignError> {
+        let mut claims = self.agent_claims(
+            issuer_subject,
+            agent_id,
+            ttl_secs,
+            None,
+            narrowed_roles(groups),
+            None,
+        )?;
+        claims[AGENT_CLAIM] = json!(agent_id);
+        if let Some(epoch) = token_epoch
+            && claims["iat"].as_u64().is_some_and(|iat| iat < epoch)
+        {
+            claims["iat"] = json!(epoch);
+        }
+        self.sign(&claims)
+    }
+
     /// Mint an agent confined to the listed output skills. Each skill must
     /// still grant the token's groups write access to its instances.
     pub fn mint_agent_narrowed_for_skills(

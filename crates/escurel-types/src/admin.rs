@@ -311,6 +311,37 @@ pub struct PurgeEventsResponse {
     pub audit_event_id: Option<String>,
 }
 
+/// MCP `issue_agent_token` (#829): a revocable bearer for an external agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct IssueAgentTokenRequest {
+    /// The agent profile id.
+    pub agent: String,
+    /// Token life in seconds; 0 = the server's default (30 days).
+    pub ttl_secs: u64,
+}
+
+/// `issue_agent_token` result. `token` is shown once: never log it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct IssueAgentTokenResponse {
+    pub token: String,
+    pub agent: String,
+    pub subject: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for IssueAgentTokenResponse {
+    /// Hand-written: a bearer must not reach a log through `{:?}`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssueAgentTokenResponse")
+            .field("agent", &self.agent)
+            .field("subject", &self.subject)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
 /// MCP `usage_report` (#821): usage and cost from `run-finished`, grouped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
