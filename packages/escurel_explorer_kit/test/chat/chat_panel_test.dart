@@ -107,4 +107,53 @@ void main() {
     expect(find.textContaining('Chat is not set up here'), findsOneWidget);
     expect(find.bySemanticsLabel('chat-input'), findsNothing);
   });
+
+  testWidgets('a shared chat that acts as a group says so in Recent (#830)', (
+    tester,
+  ) async {
+    final client = FixtureEscurelClient.fromSources(
+      skillFiles: {
+        'conversation.md': _seed('conversation.md'),
+        'chat.md': _seed('chat.md'),
+      },
+      instanceFiles: const {
+        'conversation/teams-sales.md':
+            '---\nkind: instance\nskill: conversation\nid: teams-sales\n'
+            'title: "msteams chat"\nowner: "group:sales"\n---\n# msteams chat\n',
+        'conversation/c-mine.md':
+            '---\nkind: instance\nskill: conversation\nid: c-mine\n'
+            'title: "Mine"\nowner: "user:alice"\n---\n# Mine\n',
+      },
+      writeEnabled: true,
+    );
+    await _pump(tester, client);
+    await tester.tap(find.text('Recent'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.bySemanticsLabel(RegExp(r'^chat-group-principal:.*teams-sales')),
+      findsOneWidget,
+    );
+    expect(find.text('Shared chat · acts as group sales'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel(RegExp(r'^chat-group-principal:.*c-mine')),
+      findsNothing,
+      reason: 'a person\'s own chat is not labelled',
+    );
+  });
+
+  test('only a group: owner acts as a group', () {
+    expect(
+      const Conversation(
+        pageId: 'p',
+        title: 't',
+        owner: 'group:ops',
+      ).actsAsGroup,
+      'ops',
+    );
+    expect(
+      const Conversation(pageId: 'p', title: 't', owner: 'user:a').actsAsGroup,
+      isNull,
+    );
+    expect(const Conversation(pageId: 'p', title: 't').actsAsGroup, isNull);
+  });
 }

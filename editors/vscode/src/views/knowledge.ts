@@ -10,6 +10,7 @@ import { uriForPage } from '../fs/provider';
 import { log } from '../log';
 import { connectionStateOf, describeError } from '../errors';
 import { instanceRow, type InstanceRow, type SkillRow } from './knowledgeModel';
+import { CHAT_CHANNEL_SKILL } from './chatChannelModel';
 import {
   ROLE_ICONS,
   buildSkillTree,
@@ -169,7 +170,12 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
           backendIcon(n.skill.backend.kind) ?? ROLE_ICONS[role],
           new vscode.ThemeColor('charts.purple'),
         );
-        item.contextValue = n.readOnly ? 'skill.readonly' : 'skill';
+        // The shared-chat mappings (#830) get the admin's "Map Teams conversation…" action.
+        item.contextValue = n.readOnly
+          ? 'skill.readonly'
+          : n.skill.id === CHAT_CHANNEL_SKILL
+            ? 'skill.chatChannel'
+            : 'skill';
         item.resourceUri = uriForPage(`markdown/skills/${n.skill.id}.md`);
         item.accessibilityInformation = {
           label: skillAccessibleName(n.skill),

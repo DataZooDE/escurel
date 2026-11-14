@@ -25,9 +25,21 @@ String chatGroupId(String subject, String pageId) =>
 
 /// One conversation in Recent.
 class Conversation {
-  const Conversation({required this.pageId, required this.title});
+  const Conversation({required this.pageId, required this.title, this.owner});
   final String pageId;
   final String title;
+
+  /// The conversation page's `owner`: a person, or — for a Teams group chat
+  /// or channel the chat bridge answers (#830) — a group principal.
+  final String? owner;
+
+  /// The group a shared chat acts as (`group:<g>` → `<g>`), else null.
+  String? get actsAsGroup {
+    final o = owner;
+    return o != null && o.startsWith('group:') && o.length > 6
+        ? o.substring(6)
+        : null;
+  }
 }
 
 /// One row of the conversation.
@@ -169,6 +181,7 @@ class ChatController extends StateNotifier<ChatState> {
             Conversation(
               pageId: i.id,
               title: (i.frontmatter['title'] as String?) ?? i.id,
+              owner: i.frontmatter['owner'] as String?,
             ),
         ],
       );
@@ -250,7 +263,7 @@ class ChatController extends StateNotifier<ChatState> {
       '---\nkind: instance\nskill: conversation\nid: $id\ntitle: ${jsonEncode(title)}\n'
       'owner: ${jsonEncode(owner)}\nstarted_at: $startedAt\n---\n# ${title.replaceAll('\n', ' ')}\n',
     );
-    return Conversation(pageId: pageId, title: title);
+    return Conversation(pageId: pageId, title: title, owner: owner);
   }
 
   Future<void> _refresh() async {

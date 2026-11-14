@@ -42,6 +42,7 @@ import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 import { registerUsageView, type UsageTree } from './views/usage';
 import { registerAgentsView, type AgentsTree } from './views/agents';
+import { registerChatChannelCommands } from './views/chatChannel';
 import { registerRuntimesView, type RuntimesTree } from './views/runtimes';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
@@ -132,6 +133,7 @@ export function activate(
   const runner = registerRunnerView(context, services);
   const usage = registerUsageView(context, services);
   const agents = registerAgentsView(context, services);
+  registerChatChannelCommands(context, services, () => knowledge.refresh());
   const runtimes = registerRuntimesView(context, services);
   EscurelFileSystem.register(
     context,
