@@ -39,10 +39,13 @@ Runner gaps (#827):
   `escurel admin tenant update --transcript-retention-days <n>` wins over `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`
   (`0` = forever) and applies on the next sweep, without a restart.
 - **Webhook-fired schedules.** With `ESCUREL_SCHEDULE_WEBHOOK_SECRET[_FILE]` set, a signed
-  `POST /hooks/schedule/<skill>` (`X-Escurel-Webhook-Signature`, `X-Escurel-Delivery`) fires a skill that opts in
-  with `schedule_webhook: true` (a new authority key), captured as `hook:<skill>:<delivery>` (a redelivery is one
-  event). Its deliveries share the skill's `schedule_budget` with the cron windows; past it a `run-skipped` record is
-  filed. `hook:` event ids are reserved like `sched:`.
+  `POST /hooks/schedule/<skill>` fires a skill that opts in with `schedule_webhook: true` (a new authority key),
+  captured as `hook:<skill>:<delivery>` (a redelivery is one event). The signature
+  (`X-Escurel-Webhook-Signature`) covers `escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n<body>`, with
+  `X-Escurel-Delivery` and `X-Escurel-Timestamp` (within 5 minutes), so a captured request cannot be replayed. Its
+  deliveries share the skill's `schedule_budget` with the cron windows, counted under a per-skill lock; past it the
+  day's first skip files a `run-skipped` record, and a skipped delivery stays skipped. `hook:` event ids are
+  reserved like `sched:`.
 
 **Behaviour changes to note:**
 - A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as

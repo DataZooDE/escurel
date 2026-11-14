@@ -526,32 +526,49 @@ webhook (a CI job, a GitHub push, another system), at the GATEWAY:
 
 ```
 POST /hooks/schedule/<skill>
-X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of the raw body under ESCUREL_SCHEDULE_WEBHOOK_SECRET>
 X-Escurel-Delivery: <1-128 of A-Z a-z 0-9 . _ ->
+X-Escurel-Timestamp: <Unix seconds, when you send it>
+X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 under ESCUREL_SCHEDULE_WEBHOOK_SECRET of
+    "escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n" followed by the raw body>
 <body, at most 64 KiB of UTF-8; it becomes the event body>
 ```
 
 The endpoint exists only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (or
-`_FILE`) is set; the signature scheme is the one the runner's `/trigger`
-verifies. Answers, in the order they are checked: `401 bad_signature` (so a
-caller without the secret learns nothing about which skills exist),
-`400 bad_delivery` / `bad_body`, `404 skill_not_triggerable` (no such skill,
-or it did not opt in — one answer), `422 workflow_not_supported` (a
-workflow skill: its `schedule:` still fires it), then:
+`_FILE`) is set (otherwise a plain 404). The signature binds the skill, the
+delivery id and the send time, so a captured request cannot be replayed under
+a new delivery id, against another skill, or after five minutes
+(`escurel_types::webhook_signature::schedule_message` builds the message; it
+is NOT the body-only scheme of the runner's `/trigger`). Answers, in the order
+they are checked: `413 bad_body` (over 64 KiB — before the signature, which a
+cut body cannot carry), `401 bad_signature` (missing timestamp or a signature
+that does not verify — so a caller without the secret learns nothing about
+which skills exist), `401 stale_timestamp` (more than 5 minutes from the
+gateway's clock), `400 bad_delivery` / `bad_body` (not UTF-8), `404
+skill_not_triggerable` (no such skill, or it did not opt in — one answer),
+`422 workflow_not_supported` (a workflow skill: its `schedule:` still fires
+it), then:
 
 - `202 {event_id}` — captured `hook:<skill>:<delivery>`, `label_skill:
   <skill>`, `source: schedule-webhook`, `provenance.webhook: {delivery}`; the
   runner takes it from the inbox like any event;
 - `200 {event_id, replayed: true}` — that delivery was already captured
   (first writer wins: a redelivery never runs the skill twice);
-- `200 {event_id, skipped: true, reason, record}` — past the budget: the
-  same `escurel:run` `run-skipped` record the schedule loop files, id
-  `hook:<skill>:<delivery>:skipped`, body `{reason: "budget" |
-  "invalid_budget", runs_per_day, skill, trigger_event_id, delivery}`.
+- `200 {event_id, skipped: true, replayed: true, record}` — that delivery was
+  already skipped for the budget: it stays skipped, even after midnight or a
+  raised budget;
+- `200 {event_id, skipped: true, reason, record}` — past the budget. The
+  day's first skipped delivery files the same `escurel:run` `run-skipped`
+  record the schedule loop files, id `hook:<skill>:<delivery>:skipped`, body
+  `{reason: "budget" | "invalid_budget", runs_per_day, skill,
+  trigger_event_id, delivery}`; later over-budget deliveries that UTC day are
+  answered with `record: null` and nothing is stored (so a flood cannot grow
+  the event table — and such a delivery, unrecorded, is judged afresh if it
+  is redelivered).
 
 `schedule_budget.runs_per_day` counts cron windows and webhook deliveries
 together (a delivery counts on the UTC day it was captured), at both the
-runner and the gateway. `hook:` ids, like `sched:`, are reserved: no
+runner and the gateway; the gateway serialises count and capture per skill,
+so concurrent deliveries cannot overshoot it. `hook:` ids, like `sched:`, are reserved: no
 caller can pre-file one through `capture_event`.
 
 

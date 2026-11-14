@@ -2,30 +2,40 @@
 //! opts in with `schedule_webhook: true`, as the runner's schedule loop fires
 //! one on its cron.
 //!
-//! - Mounted only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set; the body must
-//!   carry `X-Escurel-Webhook-Signature: sha256=<hex>` over its raw bytes
-//!   under that secret (the scheme the runner's `/trigger` verifies). The
-//!   signature is checked first, so a caller without the secret cannot probe
-//!   which skills exist.
+//! - Mounted only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set. The request
+//!   carries `X-Escurel-Webhook-Signature: sha256=<hex>`, an HMAC under that
+//!   secret over `escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n<body>`
+//!   (`escurel_types::webhook_signature::schedule_message`), and
+//!   `X-Escurel-Timestamp` (Unix seconds) within ±5 minutes of the gateway's
+//!   clock. The signature is checked first, so a caller without the secret
+//!   cannot probe which skills exist; binding the delivery id and the time
+//!   into it means a captured request cannot be replayed as new deliveries.
 //! - `X-Escurel-Delivery` names the delivery; the trigger is
 //!   `hook:<skill>:<delivery>`, and first writer wins on it, so a redelivery
-//!   is the same event (`200 {replayed: true}`).
+//!   is the same event (`200 {replayed: true}`) — and a delivery once skipped
+//!   for the budget stays skipped.
 //! - `schedule_budget.runs_per_day` counts schedule windows and webhook
-//!   deliveries together (`escurel_types::schedule::counts_toward_budget`);
-//!   past it, a `run-skipped` record (`hook:<skill>:<delivery>:skipped`) is
-//!   filed instead, as the schedule loop does.
+//!   deliveries together (`escurel_types::schedule::counts_toward_budget`).
+//!   Count and capture are serialised per skill in this (the writer) gateway,
+//!   so concurrent deliveries cannot overshoot it. Past it, the day's first
+//!   skipped delivery files a `run-skipped` record
+//!   (`hook:<skill>:<delivery>:skipped`), as the schedule loop does; later
+//!   ones that day are answered `skipped` and not stored, so a flood of
+//!   signed deliveries cannot grow the event table.
 //!
 //! The captured event is an ordinary inbox event: the runner admits and runs
 //! it like any other.
 
 use axum::Json;
 use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{TimeZone, Utc};
 use escurel_index::{EventKind, EventListFilter, Indexer, NewEvent, SkillInfo};
 use escurel_types::schedule::{HOOK_SOURCE, counts_toward_budget, hook_event_id, is_delivery_id};
+use escurel_types::webhook_signature::{SIGNATURE_HEADER, TIMESTAMP_HEADER, schedule_message};
 use serde_json::{Value, json};
 
 use crate::server::AppState;
@@ -36,6 +46,8 @@ pub(crate) const DELIVERY_HEADER: &str = "X-Escurel-Delivery";
 pub(crate) const MAX_BODY_BYTES: usize = 64 * 1024;
 /// The label of the `run-skipped` record (the runner's run-event label).
 const RUN_EVENT_LABEL: &str = "escurel:run";
+/// How far a delivery's `X-Escurel-Timestamp` may stray from the gateway's clock.
+const MAX_CLOCK_SKEW_SECS: i64 = 5 * 60;
 /// Page size when counting a day's triggers.
 const BUDGET_PAGE: usize = 200;
 /// A schedule trigger may be captured up to the runner's catch-up grace after
@@ -55,9 +67,18 @@ pub(crate) async fn schedule_hook(
     State(state): State<AppState>,
     Path(skill): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let resp = handle(&state, &skill, &headers, &body).await;
+    let resp = match body {
+        Ok(body) => handle(&state, &skill, &headers, &body).await,
+        // Before the signature: a body cut at the limit cannot be verified anyway.
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "bad_body",
+            "the body is over 64 KiB",
+        ),
+        Err(rejection) => refuse(StatusCode::BAD_REQUEST, "bad_body", &rejection.body_text()),
+    };
     state
         .metrics
         .inc_request("/hooks/schedule", resp.status().as_u16());
@@ -73,25 +94,42 @@ async fn handle(state: &AppState, skill: &str, headers: &HeaderMap, body: &[u8])
         );
     };
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    if !escurel_types::webhook_signature::verify(
-        secret,
-        body,
-        header(escurel_types::webhook_signature::SIGNATURE_HEADER),
-    ) {
+    let delivery = header(DELIVERY_HEADER).unwrap_or("");
+    let Some(timestamp) = header(TIMESTAMP_HEADER) else {
+        return refuse(
+            StatusCode::UNAUTHORIZED,
+            "bad_signature",
+            "X-Escurel-Timestamp (Unix seconds) is required and signed",
+        );
+    };
+    let message = schedule_message(skill, delivery, timestamp, body);
+    if !escurel_types::webhook_signature::verify(secret, &message, header(SIGNATURE_HEADER)) {
         tracing::warn!(skill = %skill, "schedule webhook refused: missing or invalid signature");
         return refuse(
             StatusCode::UNAUTHORIZED,
             "bad_signature",
-            "the body's X-Escurel-Webhook-Signature does not verify",
+            "X-Escurel-Webhook-Signature does not verify over \
+             escurel-schedule-v1\\n<skill>\\n<delivery>\\n<timestamp>\\n<body>",
         );
     }
-    let Some(delivery) = header(DELIVERY_HEADER).filter(|d| is_delivery_id(d)) else {
+    let fresh = timestamp
+        .parse::<i64>()
+        .is_ok_and(|t| (Utc::now().timestamp() - t).abs() <= MAX_CLOCK_SKEW_SECS);
+    if !fresh {
+        tracing::warn!(skill = %skill, timestamp, "schedule webhook refused: stale timestamp");
+        return refuse(
+            StatusCode::UNAUTHORIZED,
+            "stale_timestamp",
+            "X-Escurel-Timestamp is more than 5 minutes from the gateway's clock",
+        );
+    }
+    if !is_delivery_id(delivery) {
         return refuse(
             StatusCode::BAD_REQUEST,
             "bad_delivery",
             "X-Escurel-Delivery is required: 1-128 of A-Z a-z 0-9 . _ -",
         );
-    };
+    }
     let Ok(text) = std::str::from_utf8(body) else {
         return refuse(StatusCode::BAD_REQUEST, "bad_body", "the body is not UTF-8");
     };
@@ -139,6 +177,22 @@ async fn handle(state: &AppState, skill: &str, headers: &HeaderMap, body: &[u8])
     }
 }
 
+/// One lock per skill: a delivery's budget count and its capture happen under
+/// it, so concurrent deliveries cannot all see the same count and overshoot.
+/// Per process — this is the writer gateway, the only one that captures.
+fn skill_lock(skill: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(skill.to_owned())
+        .or_default()
+        .clone()
+}
+
 async fn fire(
     state: &AppState,
     indexer: &Indexer,
@@ -149,12 +203,7 @@ async fn fire(
 ) -> Result<Response, escurel_index::IndexerError> {
     // Absent and not opted in answer alike: the endpoint says nothing about a
     // skill it would not fire.
-    let Some(info) = indexer
-        .list_skills()
-        .await?
-        .into_iter()
-        .find(|s| s.id == skill && s.schedule_webhook)
-    else {
+    let Some(info) = indexer.skill(skill).await?.filter(|s| s.schedule_webhook) else {
         return Ok(refuse(
             StatusCode::NOT_FOUND,
             "skill_not_triggerable",
@@ -169,20 +218,37 @@ async fn fire(
         ));
     }
     let event_id = hook_event_id(skill, delivery);
+    let lock = skill_lock(skill);
+    let _serialised = lock.lock().await;
     if indexer.get_event(&event_id).await?.is_some() {
         return Ok(reply(
             StatusCode::OK,
             json!({ "event_id": event_id, "replayed": true }),
         ));
     }
-    if let Some(reason) = over_budget(indexer, &info, &event_id).await? {
-        let skipped = skipped_record(&info, &event_id, delivery, reason);
-        let id = skipped.event_id.clone();
-        let stored = indexer.capture_event(skipped).await?;
-        announce(state, indexer, stored);
+    // Skipped once, skipped for good: a redelivery after midnight or after the budget was raised
+    // was already answered `skipped`, and must not turn into a run now.
+    let skipped_id = format!("{event_id}:skipped");
+    if indexer.get_event(&skipped_id).await?.is_some() {
         return Ok(reply(
             StatusCode::OK,
-            json!({ "event_id": event_id, "skipped": true, "reason": reason, "record": id }),
+            json!({ "event_id": event_id, "skipped": true, "replayed": true, "record": skipped_id }),
+        ));
+    }
+    if let Some(reason) = over_budget(indexer, &info, &event_id).await? {
+        // The day's first skip is recorded; later ones are answered and not stored.
+        let record = if skipped_today(indexer, skill).await? {
+            Value::Null
+        } else {
+            let stored = indexer
+                .capture_event(skipped_record(&info, &event_id, delivery, reason))
+                .await?;
+            announce(state, indexer, stored);
+            json!(skipped_id)
+        };
+        return Ok(reply(
+            StatusCode::OK,
+            json!({ "event_id": event_id, "skipped": true, "reason": reason, "record": record }),
         ));
     }
     let json_body = headers
@@ -259,6 +325,43 @@ async fn over_budget(
         match page.next_cursor {
             Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
             _ => return Ok(None),
+        }
+    }
+}
+
+/// Whether a webhook delivery for `skill` was already recorded as skipped
+/// today (UTC).
+async fn skipped_today(
+    indexer: &Indexer,
+    skill: &str,
+) -> Result<bool, escurel_index::IndexerError> {
+    let day = Utc::now().date_naive();
+    let start = Utc.from_utc_datetime(&day.and_time(chrono::NaiveTime::MIN));
+    let filter = EventListFilter {
+        label_skill: Some(RUN_EVENT_LABEL.to_owned()),
+        // `run-skipped` is a system event.
+        include_system: true,
+        since: Some(start),
+        until: Some(start + chrono::Duration::days(1)),
+        ..Default::default()
+    };
+    // `hook:<skill>:` — every delivery of this skill, and only of it.
+    let prefix = hook_event_id(skill, "");
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = indexer
+            .list_events_filtered_page(&filter, true, BUDGET_PAGE, cursor.as_deref())
+            .await?;
+        if page.events.iter().any(|e| {
+            e.source == HOOK_SOURCE
+                && e.event_id.starts_with(&prefix)
+                && e.event_id.ends_with(":skipped")
+        }) {
+            return Ok(true);
+        }
+        match page.next_cursor {
+            Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+            _ => return Ok(false),
         }
     }
 }

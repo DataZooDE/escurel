@@ -75,7 +75,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET",
         component: "Server",
         default: "—",
-        doc: "mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST whose body is HMAC-SHA256-signed with this secret (`X-Escurel-Webhook-Signature: sha256=<hex>`) and that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event). Unset = no endpoint",
+        doc: "mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event) and its send time (`X-Escurel-Timestamp`, Unix seconds, within 5 minutes of the gateway's clock), signed with this secret over all of it (`X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of escurel-schedule-v1\\n<skill>\\n<delivery>\\n<timestamp>\\n<body>>`). Unset = no endpoint",
     },
     ConfigKey {
         name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
@@ -1648,6 +1648,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "TestOnly",
         default: "—",
         doc: "echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_SLEEP_ONCE",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: a marker path; only the attempt that creates it idles for ESCUREL_ECHO_SLEEP_MS (tests)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_STDIN_TURNS",

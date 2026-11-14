@@ -20,7 +20,7 @@ escurel-server.
 | `ESCUREL_SERVER_DATA_DIR` | /data | host-volume root for DuckDB + FsStore + tenants |
 | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
-| `ESCUREL_SCHEDULE_WEBHOOK_SECRET` | — | mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST whose body is HMAC-SHA256-signed with this secret (`X-Escurel-Webhook-Signature: sha256=<hex>`) and that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event). Unset = no endpoint |
+| `ESCUREL_SCHEDULE_WEBHOOK_SECRET` | — | mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event) and its send time (`X-Escurel-Timestamp`, Unix seconds, within 5 minutes of the gateway's clock), signed with this secret over all of it (`X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n<body>>`). Unset = no endpoint |
 | `ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE` | — | a file holding `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (trimmed); setting both refuses to start |
 | `ESCUREL_SERVER_LISTEN_HTTP` | 0.0.0.0:8080 | HTTP listener (MCP/WS/REST) |
 | `ESCUREL_TENANT` | default | single-tenant indexer's tenant id |
@@ -361,6 +361,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_VERSION_FILE` | — | echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
+| `ESCUREL_ECHO_SLEEP_ONCE` | — | echo harness: a marker path; only the attempt that creates it idles for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
 | `ESCUREL_ECHO_USAGE` | — | echo harness: report this usage (tests) |
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |
