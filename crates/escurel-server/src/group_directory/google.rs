@@ -15,7 +15,7 @@ use escurel_auth::ClientCredentials;
 
 use super::{
     DirectoryError, DirectoryGroup, DirectoryUser, GroupDirectory, GroupsFuture, MAX_PAGES,
-    NameRule, get_json, service_token,
+    NameRule, authorized_get,
 };
 use crate::egress::Egress;
 
@@ -119,13 +119,13 @@ impl GoogleDirectory {
             if let Some(t) = &page_token {
                 url.query_pairs_mut().append_pair("pageToken", t);
             }
-            let token = service_token(&self.egress, &self.credentials).await?;
-            let (body, _) = get_json(
+            let (body, _) = authorized_get(
                 &self.egress,
+                &self.credentials,
                 "google",
                 &base,
                 url.as_str(),
-                &format!("Bearer {token}"),
+                &[],
             )
             .await?;
             for m in body["memberships"].as_array().into_iter().flatten() {

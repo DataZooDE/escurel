@@ -21,8 +21,9 @@
 //! on the configured host).
 //!
 //! A provider that cannot key the user (an email-keyed one, for a sender with
-//! no email) contributes nothing; a PERMANENT refusal (401/403/404: a
-//! misconfiguration or an unknown user) contributes nothing too, logged — it
+//! no email) contributes nothing; a PERMANENT refusal (403/404, or a 401 that
+//! a renewed token does not cure: a misconfiguration or an unknown user)
+//! contributes nothing too, logged — it
 //! narrows the person's access, never widens it. Only a RETRYABLE failure
 //! (429, 5xx, transport) with no young-enough cached answer refuses the turn.
 
@@ -79,9 +80,18 @@ pub enum DirectoryError {
     /// Try again later: a 429, a 5xx, a timeout, a dropped connection.
     #[error("{0} (retryable)")]
     Retryable(String),
-    /// Asking again will not help: 401/403/404, a refused URL, a bad answer.
+    /// Asking again will not help: 403, a refused URL, a bad answer.
     #[error("{0}")]
     Permanent(String),
+    /// The directory refused the credential (401): a service token is
+    /// renewed and the call tried once more ([`authorized_get`]); after that,
+    /// or for a static credential, it is a refusal like [`Self::Permanent`].
+    #[error("{0}")]
+    Unauthorized(String),
+    /// The directory does not know the user (404): a refusal, and for the
+    /// identity lookup, no principal at all.
+    #[error("{0}")]
+    NotFound(String),
 }
 
 /// A provider's answer, boxed so providers sit behind one trait object.
@@ -434,11 +444,16 @@ fn token_error(e: &escurel_auth::ClientCredentialsError) -> DirectoryError {
     }
 }
 
-/// A service token for `credentials`, fetched through the egress policy.
+/// A service token for `credentials`: the cached one, else one fetched
+/// through the egress policy (the token endpoint is only vetted when it will
+/// be asked, so its host being unresolvable does not fail a cached lookup).
 async fn service_token(
     egress: &Egress,
     credentials: &escurel_auth::ClientCredentials,
 ) -> Result<String, DirectoryError> {
+    if let Some(token) = credentials.cached().await {
+        return Ok(token);
+    }
     let (client, _) = egress
         .client_for(credentials.token_url())
         .await
@@ -447,6 +462,43 @@ async fn service_token(
         .token(&client)
         .await
         .map_err(|e| token_error(&e))
+}
+
+/// [`get_json`] with a service token from `credentials`: a 401 means the
+/// token was revoked or rotated early, so it is dropped, a fresh one fetched
+/// and the call tried once more (crew Q-F3) — one path for every
+/// token-backed provider.
+///
+/// # Errors
+/// See [`get_json`]; a second 401 is [`DirectoryError::Unauthorized`].
+pub(crate) async fn authorized_get(
+    egress: &Egress,
+    credentials: &escurel_auth::ClientCredentials,
+    limiter: &str,
+    base: &reqwest::Url,
+    url: &str,
+    headers: &[(&'static str, &'static str)],
+) -> Result<(Value, reqwest::header::HeaderMap), DirectoryError> {
+    let mut retried = false;
+    loop {
+        let token = service_token(egress, credentials).await?;
+        let got = get_json(
+            egress,
+            limiter,
+            base,
+            url,
+            &format!("Bearer {token}"),
+            headers,
+        )
+        .await;
+        match got {
+            Err(DirectoryError::Unauthorized(_)) if !retried => {
+                credentials.invalidate().await;
+                retried = true;
+            }
+            other => return other,
+        }
+    }
 }
 
 /// One page of a directory's JSON listing: `url` must be on `base`'s scheme,
@@ -463,6 +515,7 @@ pub(crate) async fn get_json(
     base: &reqwest::Url,
     url: &str,
     authorization: &str,
+    headers: &[(&'static str, &'static str)],
 ) -> Result<(Value, reqwest::header::HeaderMap), DirectoryError> {
     let (client, parsed) = egress.client_for(url).await.map_err(|e| egress_error(&e))?;
     if parsed.scheme() != base.scheme()
@@ -474,22 +527,25 @@ pub(crate) async fn get_json(
         ));
     }
     let _permit = egress.admit(limiter).map_err(|e| egress_error(&e))?;
+    let mut req = client
+        .get(parsed)
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .header(reqwest::header::ACCEPT, "application/json");
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
     let resp = egress
-        .send_capped(
-            client
-                .get(parsed)
-                .header(reqwest::header::AUTHORIZATION, authorization)
-                .header(reqwest::header::ACCEPT, "application/json"),
-        )
+        .send_capped(req)
         .await
         .map_err(|e| egress_error(&e))?;
     let status = resp.status.as_u16();
     if !resp.status.is_success() {
         let why = format!("the directory answered {status}");
-        return Err(if status == 429 || status >= 500 {
-            DirectoryError::Retryable(why)
-        } else {
-            DirectoryError::Permanent(why)
+        return Err(match status {
+            401 => DirectoryError::Unauthorized(why),
+            404 => DirectoryError::NotFound(why),
+            429 | 500.. => DirectoryError::Retryable(why),
+            _ => DirectoryError::Permanent(why),
         });
     }
     let body = serde_json::from_slice(&resp.body)

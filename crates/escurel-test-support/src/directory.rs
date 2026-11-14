@@ -258,6 +258,23 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
     if auth != Some(expected.as_str()) {
         return ResponseTemplate::new(401);
     }
+    // Graph answers an OData-cast listing only as an advanced query (crew U-F3).
+    if kind == Kind::Graph {
+        let eventual = req
+            .headers
+            .get("consistencylevel")
+            .and_then(|v| v.to_str().ok())
+            == Some("eventual");
+        let counted = req
+            .url
+            .query_pairs()
+            .any(|(k, v)| k == "$count" && v == "true");
+        if !(eventual && counted) {
+            return ResponseTemplate::new(400).set_body_json(json!({ "error": {
+                "code": "Request_UnsupportedQuery",
+                "message": "this query needs ConsistencyLevel: eventual and $count=true" } }));
+        }
+    }
     let query = |k: &str| {
         req.url
             .query_pairs()
@@ -311,7 +328,7 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
             let mut body = json!({ "value": value });
             if more {
                 body["@odata.nextLink"] = json!(format!(
-                    "{base}{path}?$select=id,displayName,securityEnabled,groupTypes&$skiptoken={}",
+                    "{base}{path}?$select=id,displayName,securityEnabled,groupTypes&$count=true&$skiptoken={}",
                     at + 1
                 ));
             }

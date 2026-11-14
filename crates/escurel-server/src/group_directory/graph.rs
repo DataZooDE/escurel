@@ -15,7 +15,7 @@ use escurel_auth::ClientCredentials;
 
 use super::{
     DirectoryError, DirectoryGroup, DirectoryUser, GroupDirectory, GroupsFuture, MAX_PAGES,
-    NameRule, get_json, is_object_id, service_token,
+    NameRule, authorized_get, is_object_id,
 };
 use crate::egress::Egress;
 
@@ -23,6 +23,12 @@ use crate::egress::Egress;
 pub const DEFAULT_BASE_URL: &str = "https://graph.microsoft.com";
 /// The scope a client-credentials token for Graph asks for.
 pub const SCOPE: &str = "https://graph.microsoft.com/.default";
+
+/// Graph treats an OData cast on a directory-object listing as an ADVANCED
+/// query, which needs `ConsistencyLevel: eventual` (with `$count=true` in the
+/// URL); every page is asked with it, `@odata.nextLink` pages included
+/// (crew U-F3).
+const ADVANCED_QUERY: &[(&str, &str)] = &[("ConsistencyLevel", "eventual")];
 
 /// The token endpoint of an Entra tenant.
 #[must_use]
@@ -86,24 +92,20 @@ impl GraphDirectory {
         let base = reqwest::Url::parse(&self.base_url)
             .map_err(|e| DirectoryError::Permanent(e.to_string()))?;
         let mut url = format!(
-            "{}/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName,securityEnabled,groupTypes",
+            "{}/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName,securityEnabled,groupTypes&$count=true",
             self.base_url.trim_end_matches('/')
         );
         let mut out = Vec::new();
         for _ in 0..MAX_PAGES {
-            let token = service_token(&self.egress, &self.credentials).await?;
-            let got = get_json(
+            let (body, _) = authorized_get(
                 &self.egress,
+                &self.credentials,
                 "graph",
                 &base,
                 &url,
-                &format!("Bearer {token}"),
+                ADVANCED_QUERY,
             )
-            .await;
-            if matches!(&got, Err(DirectoryError::Permanent(why)) if why.ends_with("401")) {
-                self.credentials.invalidate().await;
-            }
-            let (body, _) = got?;
+            .await?;
             out.extend(
                 body["value"]
                     .as_array()
@@ -176,5 +178,76 @@ mod tests {
         assert!(!name_counts(&distribution, false));
         assert!(!name_counts(&distribution, true));
         assert!(!name_counts(&unknown, false));
+    }
+
+    /// Crew Q-F3 + U-F3: a 401 renews the service token and asks once more;
+    /// every page carries the advanced-query header and `$count=true`.
+    #[tokio::test]
+    async fn a_rejected_token_is_renewed_once_and_every_page_is_an_advanced_query() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+        let idp = MockServer::start().await;
+        let issued = Arc::new(AtomicUsize::new(0));
+        let n = Arc::clone(&issued);
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(move |_: &Request| {
+                let i = n.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "access_token": format!("t-{i}"), "expires_in": 3600 }))
+            })
+            .mount(&idp)
+            .await;
+        let listing = "/v1.0/users/oid/transitiveMemberOf/microsoft.graph.group";
+        let base = idp.uri();
+        Mock::given(method("GET"))
+            .and(path(listing))
+            .and(header("ConsistencyLevel", "eventual"))
+            .and(query_param("$count", "true"))
+            .respond_with(move |req: &Request| {
+                let auth = req
+                    .headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok());
+                if auth != Some("Bearer t-2") {
+                    return ResponseTemplate::new(401);
+                }
+                let page2 = req.url.query_pairs().any(|(k, _)| k == "$skiptoken");
+                let mut body = json!({ "value": [{ "id": if page2 { "g2" } else { "g1" },
+                    "displayName": "escurel-x", "securityEnabled": true, "groupTypes": [] }] });
+                if !page2 {
+                    body["@odata.nextLink"] = json!(format!(
+                        "{base}{listing}?$select=id&$count=true&$skiptoken=2"
+                    ));
+                }
+                ResponseTemplate::new(200).set_body_json(body)
+            })
+            .mount(&idp)
+            .await;
+        let egress = Arc::new(Egress::new(crate::egress::EgressPolicy {
+            allow_loopback: true,
+            ..Default::default()
+        }));
+        let dir = GraphDirectory::new(
+            GraphConfig {
+                tenant_id: "t".into(),
+                client_id: "c".into(),
+                client_secret: "s".into(),
+                token_url: format!("{}/token", idp.uri()),
+                base_url: idp.uri(),
+                rule: NameRule::default(),
+                include_m365_groups: false,
+            },
+            egress,
+        );
+        let got = dir.groups_for("oid").await.expect("renewed and answered");
+        let ids: Vec<&str> = got.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, ["g1", "g2"]);
+        assert_eq!(
+            issued.load(Ordering::SeqCst),
+            2,
+            "one renewal, then the cached token"
+        );
     }
 }

@@ -18,6 +18,9 @@ use tokio::sync::Mutex;
 const RENEW_MARGIN: Duration = Duration::from_secs(300);
 /// The lifetime assumed when the endpoint names none.
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
+/// The most of a token response that is read (crew Q-F5): a token answer is
+/// a few KiB; a misbehaving endpoint must not grow the process without limit.
+pub const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Why no token could be had. Never carries the secret or the response body
 /// (an identity provider may echo the request back).
@@ -169,6 +172,16 @@ impl ClientCredentials {
         &self.token_url
     }
 
+    /// The cached token while it is still good, without any request — so a
+    /// caller can skip vetting the token endpoint when nothing will be sent
+    /// to it (crew Q-F13).
+    pub async fn cached(&self) -> Option<String> {
+        let slot = self.cached.lock().await;
+        slot.as_ref()
+            .filter(|(_, renew_at)| Instant::now() < *renew_at)
+            .map(|(token, _)| token.clone())
+    }
+
     /// A valid access token: the cached one, or a fresh one fetched with
     /// `http`. Concurrent callers share one fetch.
     ///
@@ -190,10 +203,8 @@ impl ClientCredentials {
         if !resp.status().is_success() {
             return Err(ClientCredentialsError::Status(resp.status().as_u16()));
         }
-        let body: Value = resp
-            .json()
-            .await
-            .map_err(|e| ClientCredentialsError::Malformed(e.without_url().to_string()))?;
+        let body: Value = serde_json::from_slice(&read_capped(resp).await?)
+            .map_err(|e| ClientCredentialsError::Malformed(e.to_string()))?;
         let token = body["access_token"]
             .as_str()
             .filter(|t| !t.is_empty())
@@ -213,6 +224,33 @@ impl ClientCredentials {
     pub async fn invalidate(&self) {
         *self.cached.lock().await = None;
     }
+}
+
+/// The response body, refused once it passes [`MAX_TOKEN_RESPONSE_BYTES`].
+async fn read_capped(mut resp: reqwest::Response) -> Result<Vec<u8>, ClientCredentialsError> {
+    let too_big = || {
+        ClientCredentialsError::Malformed(format!(
+            "the answer is larger than {MAX_TOKEN_RESPONSE_BYTES} bytes"
+        ))
+    };
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_TOKEN_RESPONSE_BYTES as u64)
+    {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ClientCredentialsError::Transport(e.without_url().to_string()))?
+    {
+        if body.len() + chunk.len() > MAX_TOKEN_RESPONSE_BYTES {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -287,5 +325,37 @@ mod tests {
         let cc = ClientCredentials::new(format!("{}/token", idp.uri()), "app", "pw", "s");
         let err = cc.token(&reqwest::Client::new()).await.unwrap_err();
         assert_eq!(err.to_string(), "token endpoint answered 401");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_token_answer_is_refused_and_a_good_token_is_cached() {
+        let idp = MockServer::start().await;
+        let huge = "x".repeat(MAX_TOKEN_RESPONSE_BYTES + 1);
+        Mock::given(method("POST"))
+            .and(path("/huge"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "t", "padding": huge })),
+            )
+            .mount(&idp)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "t-1" })),
+            )
+            .mount(&idp)
+            .await;
+        let http = reqwest::Client::new();
+        let big = ClientCredentials::new(format!("{}/huge", idp.uri()), "app", "pw", "s");
+        let err = big.token(&http).await.unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err}");
+        let cc = ClientCredentials::new(format!("{}/token", idp.uri()), "app", "pw", "s");
+        assert_eq!(cc.cached().await, None);
+        cc.token(&http).await.unwrap();
+        assert_eq!(cc.cached().await.as_deref(), Some("t-1"));
+        cc.invalidate().await;
+        assert_eq!(cc.cached().await, None);
     }
 }

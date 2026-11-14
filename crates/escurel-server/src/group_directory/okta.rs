@@ -76,7 +76,7 @@ impl OktaDirectory {
         let auth = format!("SSWS {}", self.cfg.api_token);
         let mut out = Vec::new();
         for _ in 0..MAX_PAGES {
-            let (body, headers) = get_json(&self.egress, "okta", &base, &url, &auth).await?;
+            let (body, headers) = get_json(&self.egress, "okta", &base, &url, &auth, &[]).await?;
             out.extend(body.as_array().into_iter().flatten().filter_map(|g| {
                 Some(DirectoryGroup {
                     id: g["id"].as_str()?.to_owned(),
