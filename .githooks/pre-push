@@ -40,9 +40,15 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "pre-push: warning: uncommitted changes are included in what gets checked" >&2
 fi
 
-# The Flutter app and the VS Code extension only when touched, mirroring the
-# `paths:` filters of explore.yml and vscode.yml.
-steps=(pre-push)
+# Every check runs only when its tree is touched, mirroring the workflows:
+# the Rust gate (fmt, clippy, cargo test) like ci.yml's `paths-ignore:
+# editors/vscode/**`, the Flutter app and the VS Code extension like the
+# `paths:` filters of explore.yml and vscode.yml. A push that only edits the
+# extension (or its demo seed) does not run the workspace's Rust suite.
+steps=()
+if grep -vE '^editors/vscode/' <<<"$changed" | grep -q .; then
+  steps+=(pre-push)
+fi
 if grep -qE '^(apps/escurel-explore|packages/escurel_explorer_kit|examples/crm-demo)/' <<<"$changed"; then
   steps+=(explore)
 fi
@@ -56,4 +62,8 @@ fi
 # shellcheck disable=SC2046
 unset $(git rev-parse --local-env-vars)
 
+if [ "${#steps[@]}" -eq 0 ]; then
+  echo "pre-push: nothing to check for this push"
+  exit 0
+fi
 exec "$root/scripts/check.sh" "${steps[@]}"
