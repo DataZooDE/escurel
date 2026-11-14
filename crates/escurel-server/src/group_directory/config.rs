@@ -38,8 +38,14 @@ const DIRECTORY_KEYS: &[(&str, &[&str])] = &[
         "okta",
         &[
             "ESCUREL_AUTH_OKTA_BASE_URL",
+            "ESCUREL_AUTH_OKTA_AUTH",
             "ESCUREL_AUTH_OKTA_API_TOKEN",
             "ESCUREL_AUTH_OKTA_API_TOKEN_FILE",
+            "ESCUREL_AUTH_OKTA_CLIENT_ID",
+            "ESCUREL_AUTH_OKTA_PRIVATE_KEY",
+            "ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE",
+            "ESCUREL_AUTH_OKTA_KEY_ID",
+            "ESCUREL_AUTH_OKTA_TOKEN_URL",
             "ESCUREL_AUTH_OKTA_USER_KEY",
             "ESCUREL_AUTH_OKTA_GROUP_PREFIX",
             "ESCUREL_AUTH_OKTA_GROUP_MAP_FILE",
@@ -52,20 +58,39 @@ pub(crate) fn bridge_refusal<T>(why: String) -> Result<T, ConfigError> {
     Err(ConfigError::Bridge(why))
 }
 
-/// An https URL, or plain http to a loopback address (tests, local development).
-fn directory_url(key: &str, url: &str) -> Result<(), ConfigError> {
-    let ok = reqwest::Url::parse(url).is_ok_and(|u| {
-        u.host_str().is_some()
-            && (u.scheme() == "https"
-                || (u.scheme() == "http"
-                    && matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))))
+/// An https URL — or plain http to a loopback address, for a stand-in in
+/// tests and local development, and only while that dev flag
+/// (`ESCUREL_EGRESS_ALLOW_LOOPBACK`, which warns at boot) is on (#835).
+pub(crate) fn directory_url(key: &str, url: &str, allow_loopback: bool) -> Result<(), ConfigError> {
+    https_url(key, url, allow_loopback, "a directory")
+}
+
+/// [`directory_url`] for any outbound endpoint: `what` names it in the
+/// refusal ("a directory", "a Bot Framework endpoint").
+pub(crate) fn https_url(
+    key: &str,
+    url: &str,
+    allow_loopback: bool,
+    what: &str,
+) -> Result<(), ConfigError> {
+    let parsed = reqwest::Url::parse(url)
+        .ok()
+        .filter(|u| u.host_str().is_some());
+    let loopback_http = parsed.as_ref().is_some_and(|u| {
+        u.scheme() == "http" && matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
     });
-    if ok {
-        Ok(())
-    } else {
-        bridge_refusal(format!(
-            "{key} `{url}` must be an https URL (plain http only to a loopback address)"
-        ))
+    match parsed {
+        Some(u) if u.scheme() == "https" => Ok(()),
+        Some(_) if loopback_http && allow_loopback => Ok(()),
+        Some(_) if loopback_http => bridge_refusal(format!(
+            "{key} `{url}` is plain http: that is for a local stand-in only, with \
+             ESCUREL_EGRESS_ALLOW_LOOPBACK=true (development and tests); {what} must be an \
+             https URL"
+        )),
+        _ => bridge_refusal(format!(
+            "{key} `{url}` must be an https URL (plain http only to a loopback address, with \
+             ESCUREL_EGRESS_ALLOW_LOOPBACK=true)"
+        )),
     }
 }
 
@@ -127,16 +152,113 @@ fn directory_rule(
     Ok(rule)
 }
 
+/// `ESCUREL_AUTH_OKTA_AUTH` and its credential: `ssws` (the default while
+/// an API token is set) or `oauth` (a service app). A key of the mode not
+/// chosen is refused rather than ignored, so a half-migrated deployment
+/// says which one it runs as.
+fn okta_auth(
+    env: &dyn EnvSource,
+    base_url: &str,
+    allow_loopback: bool,
+) -> Result<crate::group_directory::okta::OktaAuth, ConfigError> {
+    use crate::group_directory::okta;
+    let get = |k: &str| env.get(k).filter(|v| !v.trim().is_empty());
+    let api_token = secret_or_file(
+        "ESCUREL_AUTH_OKTA_API_TOKEN_FILE",
+        "set either ESCUREL_AUTH_OKTA_API_TOKEN or …_FILE, not both",
+        get("ESCUREL_AUTH_OKTA_API_TOKEN"),
+        get("ESCUREL_AUTH_OKTA_API_TOKEN_FILE"),
+    )?;
+    const SSWS_KEYS: &[&str] = &[
+        "ESCUREL_AUTH_OKTA_API_TOKEN",
+        "ESCUREL_AUTH_OKTA_API_TOKEN_FILE",
+    ];
+    const OAUTH_KEYS: &[&str] = &[
+        "ESCUREL_AUTH_OKTA_CLIENT_ID",
+        "ESCUREL_AUTH_OKTA_PRIVATE_KEY",
+        "ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE",
+        "ESCUREL_AUTH_OKTA_KEY_ID",
+        "ESCUREL_AUTH_OKTA_TOKEN_URL",
+    ];
+    let mode = get("ESCUREL_AUTH_OKTA_AUTH").map(|m| m.trim().to_ascii_lowercase());
+    let mode = match (mode.as_deref(), &api_token) {
+        (Some(m @ ("ssws" | "oauth")), _) => m.to_owned(),
+        (Some(other), _) => {
+            return bridge_refusal(format!(
+                "ESCUREL_AUTH_OKTA_AUTH `{other}` is `ssws` or `oauth`"
+            ));
+        }
+        (None, Some(_)) => "ssws".to_owned(),
+        (None, None) => {
+            return bridge_refusal(
+                "set ESCUREL_AUTH_OKTA_AUTH: `ssws` with ESCUREL_AUTH_OKTA_API_TOKEN (or …_FILE), \
+                 or `oauth` with ESCUREL_AUTH_OKTA_CLIENT_ID and ESCUREL_AUTH_OKTA_PRIVATE_KEY \
+                 (or …_FILE) of an Okta API Services app"
+                    .to_owned(),
+            );
+        }
+    };
+    let other_keys = if mode == "ssws" {
+        OAUTH_KEYS
+    } else {
+        SSWS_KEYS
+    };
+    if let Some(k) = other_keys.iter().find(|k| get(k).is_some()) {
+        return bridge_refusal(format!(
+            "{k} is set but ESCUREL_AUTH_OKTA_AUTH is `{mode}`: set the keys of one mode only"
+        ));
+    }
+    if mode == "ssws" {
+        return api_token.map(okta::OktaAuth::ApiToken).ok_or_else(|| {
+            ConfigError::Bridge(
+                "ESCUREL_AUTH_OKTA_API_TOKEN (or …_FILE) is required for ESCUREL_AUTH_OKTA_AUTH \
+                 `ssws`"
+                    .to_owned(),
+            )
+        });
+    }
+    let client_id = get("ESCUREL_AUTH_OKTA_CLIENT_ID").ok_or_else(|| {
+        ConfigError::Bridge(
+            "ESCUREL_AUTH_OKTA_CLIENT_ID is required for ESCUREL_AUTH_OKTA_AUTH `oauth`".to_owned(),
+        )
+    })?;
+    let private_key = secret_or_file(
+        "ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE",
+        "set either ESCUREL_AUTH_OKTA_PRIVATE_KEY or …_FILE, not both",
+        get("ESCUREL_AUTH_OKTA_PRIVATE_KEY"),
+        get("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE"),
+    )?
+    .ok_or_else(|| {
+        ConfigError::Bridge(
+            "ESCUREL_AUTH_OKTA_PRIVATE_KEY (or …_FILE) is required for ESCUREL_AUTH_OKTA_AUTH \
+             `oauth`"
+                .to_owned(),
+        )
+    })?;
+    let token_url =
+        get("ESCUREL_AUTH_OKTA_TOKEN_URL").unwrap_or_else(|| okta::default_token_url(base_url));
+    directory_url("ESCUREL_AUTH_OKTA_TOKEN_URL", &token_url, allow_loopback)?;
+    okta::OktaAuth::service_app(
+        client_id,
+        &secrecy::SecretString::from(private_key),
+        get("ESCUREL_AUTH_OKTA_KEY_ID"),
+        token_url,
+    )
+    .or_else(bridge_refusal)
+}
+
 /// `mint_user_token`'s configuration (#830), validated whole at boot: a
 /// principal template that could merge two people, a listed directory with a
 /// part missing, a provider's keys set while it is not listed, a mapping that
 /// yields nothing or a reserved name, or a gateway with no verifier or
 /// signing identity to mint with, refuses to start rather than refuse every
-/// turn later.
+/// turn later. `allow_loopback` is the egress dev flag
+/// (`ESCUREL_EGRESS_ALLOW_LOOPBACK`).
 pub(crate) fn bridge_mint_from(
     env: &dyn EnvSource,
     auth: Option<&AuthConfig>,
     signing: Option<&SigningConfig>,
+    allow_loopback: bool,
 ) -> Result<Option<crate::group_directory::BridgeMintConfig>, ConfigError> {
     use crate::group_directory::{BridgeMintConfig, DirectoryConfig, google, graph, okta};
     let get = |k: &str| env.get(k).filter(|v| !v.trim().is_empty());
@@ -149,7 +271,8 @@ pub(crate) fn bridge_mint_from(
     let Some(template) = get("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE") else {
         let stray = get("ESCUREL_AUTH_GROUP_DIRECTORIES")
             .map(|_| "ESCUREL_AUTH_GROUP_DIRECTORIES")
-            .or_else(|| DIRECTORY_KEYS.iter().find_map(|(p, _)| set_key(p)));
+            .or_else(|| DIRECTORY_KEYS.iter().find_map(|(p, _)| set_key(p)))
+            .or_else(|| crate::teams_verify::stray_key(env));
         return match stray {
             Some(k) => bridge_refusal(format!(
                 "{k} is set but ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE is not: the group \
@@ -240,8 +363,8 @@ pub(crate) fn bridge_mint_from(
                     .unwrap_or_else(|| graph::default_token_url(&tenant_id));
                 let base_url = get("ESCUREL_AUTH_GRAPH_BASE_URL")
                     .unwrap_or_else(|| graph::DEFAULT_BASE_URL.to_owned());
-                directory_url("ESCUREL_AUTH_GRAPH_TOKEN_URL", &token_url)?;
-                directory_url("ESCUREL_AUTH_GRAPH_BASE_URL", &base_url)?;
+                directory_url("ESCUREL_AUTH_GRAPH_TOKEN_URL", &token_url, allow_loopback)?;
+                directory_url("ESCUREL_AUTH_GRAPH_BASE_URL", &base_url, allow_loopback)?;
                 DirectoryConfig::Graph(graph::GraphConfig {
                     client_id: required("ESCUREL_AUTH_GRAPH_CLIENT_ID")?,
                     tenant_id,
@@ -285,8 +408,8 @@ pub(crate) fn bridge_mint_from(
                     .unwrap_or_else(|| google::DEFAULT_TOKEN_URL.to_owned());
                 let base_url = get("ESCUREL_AUTH_GOOGLE_BASE_URL")
                     .unwrap_or_else(|| google::DEFAULT_BASE_URL.to_owned());
-                directory_url("ESCUREL_AUTH_GOOGLE_TOKEN_URL", &token_url)?;
-                directory_url("ESCUREL_AUTH_GOOGLE_BASE_URL", &base_url)?;
+                directory_url("ESCUREL_AUTH_GOOGLE_TOKEN_URL", &token_url, allow_loopback)?;
+                directory_url("ESCUREL_AUTH_GOOGLE_BASE_URL", &base_url, allow_loopback)?;
                 let group_domains: Vec<String> = get("ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN")
                     .unwrap_or_default()
                     .split(',')
@@ -332,18 +455,8 @@ pub(crate) fn bridge_mint_from(
             }
             _ => {
                 let base_url = required("ESCUREL_AUTH_OKTA_BASE_URL")?;
-                directory_url("ESCUREL_AUTH_OKTA_BASE_URL", &base_url)?;
-                let api_token = secret_or_file(
-                    "ESCUREL_AUTH_OKTA_API_TOKEN_FILE",
-                    "set either ESCUREL_AUTH_OKTA_API_TOKEN or …_FILE, not both",
-                    get("ESCUREL_AUTH_OKTA_API_TOKEN"),
-                    get("ESCUREL_AUTH_OKTA_API_TOKEN_FILE"),
-                )?
-                .ok_or_else(|| {
-                    ConfigError::Bridge(
-                        "ESCUREL_AUTH_OKTA_API_TOKEN (or …_FILE) is required for `okta`".to_owned(),
-                    )
-                })?;
+                directory_url("ESCUREL_AUTH_OKTA_BASE_URL", &base_url, allow_loopback)?;
+                let auth = okta_auth(env, &base_url, allow_loopback)?;
                 let user_key = match get("ESCUREL_AUTH_OKTA_USER_KEY").as_deref() {
                     None | Some("email") => okta::UserKey::Email,
                     Some("upn") => okta::UserKey::Upn,
@@ -353,9 +466,9 @@ pub(crate) fn bridge_mint_from(
                         ));
                     }
                 };
-                DirectoryConfig::Okta(okta::OktaConfig {
+                let cfg = okta::OktaConfig {
                     base_url,
-                    api_token,
+                    auth,
                     user_key,
                     rule: directory_rule(
                         env,
@@ -367,7 +480,9 @@ pub(crate) fn bridge_mint_from(
                         env,
                         "ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS",
                     )?,
-                })
+                };
+                cfg.check().or_else(bridge_refusal)?;
+                DirectoryConfig::Okta(cfg)
             }
         });
     }
@@ -376,5 +491,7 @@ pub(crate) fn bridge_mint_from(
         directories,
         cache_ttl: crate::group_directory::DEFAULT_CACHE_TTL,
         stale_ttl: crate::group_directory::DEFAULT_STALE_TTL,
+        teams: crate::teams_verify::teams_from(env, allow_loopback)?,
+        rate: crate::rate_limit::rate_from(env)?,
     }))
 }

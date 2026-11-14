@@ -268,10 +268,8 @@ mod tests {
             })
             .mount(&idp)
             .await;
-        let egress = Arc::new(Egress::new(crate::egress::EgressPolicy {
-            allow_loopback: true,
-            ..Default::default()
-        }));
+        // The stand-in listens on loopback: the dev flag a local deployment would set.
+        let egress = Arc::new(Egress::new(crate::egress::EgressPolicy::dev()));
         let dir = GraphDirectory::new(
             GraphConfig {
                 tenant_id: "t".into(),

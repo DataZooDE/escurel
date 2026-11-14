@@ -188,9 +188,83 @@ the six chat-relay calls (*Gateway side* below), at most 900 s, never admin. Wit
 configured the claims must agree with Graph (a real object id, that person's own email), so the
 holder cannot pair one person's subject with another's groups; **without Graph the gateway trusts
 the bridge for identity**, so the holder can also assert any email to an email-keyed directory.
-Mint requests are not tied to a Bot Framework activity, so a captured request replays for as long
+Unless the gateway verifies the Teams activity itself (*Gateway-side Teams verification* below),
+mint requests are not tied to a Bot Framework activity, so a captured request replays for as long
 as the credential lives. Treat it like an admin credential: Secret Manager, short-lived tokens
 from the client-credentials grant, rotated through the file.
+
+## Gateway-side Teams verification (recommended for production)
+
+Give the gateway the bot's own app registration and it stops trusting the bridge about **who
+asked** (#835):
+
+```sh
+# on the gateway — the same values the bridge holds
+ESCUREL_AUTH_TEAMS_APP_ID=<bot app id>                              # = ESCUREL_BRIDGE_TEAMS_APP_ID
+ESCUREL_AUTH_TEAMS_APP_SECRET_FILE=/run/secrets/teams-bot-secret    # = ESCUREL_BRIDGE_TEAMS_APP_PASSWORD
+# A single-tenant bot (recommended): MUST match the bridge's ESCUREL_BRIDGE_TEAMS_TOKEN_URL
+ESCUREL_AUTH_TEAMS_TOKEN_URL=https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token
+# ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS=smba.trafficmanager.net,*.botframework.com   # the default
+# ESCUREL_AUTH_TEAMS_OPENID_METADATA / _ISSUER / _TOKEN_URL / _TOKEN_SCOPE           # Bot Framework defaults
+```
+
+The bridge then forwards every inbound activity's Bot Framework bearer (`activity_token`) with the
+turn's `serviceUrl`, conversation id and Teams user id. The bearer lives only in memory for that
+turn: it is never logged and never written to the bridge's state file. For every mint the gateway:
+
+1. verifies the activity token with the same check the bridge runs (issuer, `aud` = the bot's app
+   id, `exp` / `nbf`, a key endorsed for `msteams`, the `serviceurl` claim equal to the turn's
+   `serviceUrl`) and that the `serviceUrl`'s host is on `ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS`
+   (exact, or `*.suffix`). Anything else is refused `activity_unverified` **before any request**:
+   the gateway never sends its bot bearer to another host;
+2. asks that connector, through its egress policy and with the bot's own client-credentials token,
+   `GET {serviceUrl}/v3/conversations/{id}/members/{userId}`. A `404` / `403` is
+   `not_in_conversation` — the roster check, for 1:1 chats, group chats and channels alike; a
+   network failure or a `5xx` is `directory_unavailable` (retryable). A positive answer is cached
+   for 5 minutes per (serviceUrl, conversation, user);
+3. refuses a conversation kind the id's shape contradicts (`a:…` is a 1:1 chat, `19:…@thread.v2` a
+   group chat, `19:…@thread.tacv2` a channel thread; a channel turn must name its team):
+   `identity_mismatch`;
+4. takes the object id, email, UPN and tenant from **Microsoft's** answer; a bridge-asserted value
+   that disagrees is `identity_mismatch`. The principal template, the directory groups and the
+   chat-channel membership all use Microsoft's values. A roster answer without `tenantId` takes the
+   tenant Graph serves; with no Graph tenant either, the mint is refused (`identity_mismatch`).
+
+The bridge drops a `not_in_conversation` or `activity_unverified` turn silently (a WARN in its log,
+no reply, no run): neither is a person's mistake. It does the same, with or without gateway
+verification, when its own members-API lookup answers `404`. A turn the bridge resumes after a restart has lost
+its bearer, so a verifying gateway refuses its mint: the person is told once *I lost your question
+in a restart — please ask again* (a stop-first deploy costs the questions in flight their answer,
+not their reply). The turn's re-mints forward the same bearer; once it has expired (a long turn) the
+person is told at once *I lost track of your question before I could finish it — please ask
+again*, instead of waiting for the reply timeout.
+
+**What it closes.** A stolen `escurel:bridge` credential alone no longer mints for anyone: each mint
+needs an unexpired activity token Microsoft signed for this bot. The roster check stops a forged
+person who is in no conversation the bot is in, and forged identity fields: the object id, tenant,
+email and UPN are Microsoft's.
+
+**What it does not close.** The token binds the bot (`aud`) and the connector (`serviceurl`), not
+the conversation or the person: the Bot Framework signs no activity body. So a stolen bridge
+credential **plus** a captured, unexpired activity token can mint for **any member of any
+conversation the bot is in on that `serviceUrl`**, until the token expires. The gateway logs a WARN
+when one credential mints for more than 50 distinct askers in a minute. Keep the bridge credential
+short-lived and the bridge's inbound traffic on TLS.
+
+Unset, the gateway behaves as before and says once at boot that it trusts the bridge for the
+asker's identity, naming these variables.
+
+## Mint rate limits
+
+`mint_user_token` is capped with token buckets: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (default
+600) per bridge credential, checked before any directory or connector call, and
+`ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (default 30) per asker, whichever bridge asks. A
+refused mint is `rate_limited` (retryable, with `retry_after_secs` and `scope: credential | asker`).
+The bridge waits out a per-credential refusal once when it lifts within 10 s and the reply is still
+due in time; otherwise, and always for a per-asker refusal, it tells the person once: *I'm getting a
+lot of questions right now, please try again in a minute.* `0` refuses to boot.
+The cap is keyed by the credential's subject, so bridge replicas that share one credential share one
+600/min budget; give each replica its own credential (or raise the cap) when that is too few.
 
 ## Gateway side
 
@@ -295,19 +369,51 @@ ESCUREL_AUTH_GOOGLE_GROUP_MAP_FILE=/etc/escurel/google-groups.json   # {"sales@a
 # ESCUREL_AUTH_GOOGLE_GROUP_NAME=email_local                        # sales@acme.example → sales (needs the domain)
 ```
 
-**Okta** (`okta`, by email, or UPN with `ESCUREL_AUTH_OKTA_USER_KEY=upn`). Create an API token
-(Security → API → Tokens) as an admin with a **read-only** role. The gateway calls
-`GET /api/v1/users/{login}/groups` (paged by `Link` headers) with `Authorization: SSWS <token>`;
-the group name is `profile.name`, and only `OKTA_GROUP`s count for the prefix (`APP_GROUP`s with
-`ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`). OAuth for Okta service apps (client credentials with a private
-key) is not supported yet — TODO.
+**Okta** (`okta`, by email, or UPN with `ESCUREL_AUTH_OKTA_USER_KEY=upn`). The gateway calls
+`GET /api/v1/users/{login}/groups` (paged by `Link` headers); the group name is `profile.name`, and
+only `OKTA_GROUP`s count for the prefix (`APP_GROUP`s with `ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`).
+It authenticates in one of two ways (`ESCUREL_AUTH_OKTA_AUTH`):
+
+- **`oauth` — an API Services app (recommended).** No person's token is involved, and the
+  credential is a key pair rather than a bearer secret.
+  1. Applications → Create App Integration → **API Services**.
+  2. On the app's General tab, Client Credentials → Edit: client authentication **Public key /
+     Private key**; add a key (generate one in Okta and save the private key, or paste your own
+     public JWK). Note the key's **kid** if the app holds more than one. Turn **off** "Require
+     Demonstrating Proof of Possession (DPoP) header in token requests": escurel sends no DPoP
+     proof, and the gateway logs *token endpoint requires DPoP …* at the first lookup until it is off.
+  3. Okta API Scopes → grant **`okta.groups.read`** and **`okta.users.read`**.
+  4. Admin Roles → assign the app **Read-only Administrator** (the scopes alone return 403).
+
+  The gateway posts a `client_credentials` grant to the org authorization server
+  (`<base>/oauth2/v1/token`; a custom authorization server cannot grant `okta.*` scopes), its client
+  authenticated by an RS256 assertion signed with the app's key (`iss` = `sub` = the client id,
+  `aud` = the token URL, valid 5 minutes, a fresh `jti` each time), and reads the groups with
+  `Authorization: Bearer <token>`. The token is reused until shortly before it expires; a 401 renews
+  it once.
+- **`ssws` — an API token** (the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set). Create one
+  (Security → API → Tokens) as an admin with the **Read-only Administrator** role; it is sent as
+  `Authorization: SSWS <token>` and expires after 30 days unused.
+
+The gateway refuses to boot with neither mode's credential, with keys of both modes, or with a
+private key that does not parse.
 
 ```sh
 ESCUREL_AUTH_OKTA_BASE_URL=https://acme.okta.com
-ESCUREL_AUTH_OKTA_API_TOKEN_FILE=/run/secrets/okta-api-token
+ESCUREL_AUTH_OKTA_AUTH=oauth
+ESCUREL_AUTH_OKTA_CLIENT_ID=0oa…                                    # the API Services app
+ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE=/run/secrets/okta-app-key.pem     # RSA, PEM
+# ESCUREL_AUTH_OKTA_KEY_ID=…                                         # the key's kid, if several
 ESCUREL_AUTH_OKTA_GROUP_MAP_FILE=/etc/escurel/okta-groups.json       # {"00g…": "sales"}
 # ESCUREL_AUTH_OKTA_GROUP_PREFIX=escurel-
+# or, by API token:
+# ESCUREL_AUTH_OKTA_API_TOKEN_FILE=/run/secrets/okta-api-token      # (ESCUREL_AUTH_OKTA_AUTH=ssws)
 ```
+
+**Local stand-ins.** Every directory `…_BASE_URL` / `…_TOKEN_URL` must be https. Plain http is
+accepted only to a loopback address (`127.0.0.1`, `[::1]`, `localhost`) and only with the egress
+dev flag `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`, which warns at boot and must never be set in
+production; without it the gateway refuses to start, naming the key and the flag.
 
 A sender with no email (the members API gave none) is looked up in Graph only; the email-keyed
 directories add nothing for them.
@@ -430,6 +536,12 @@ symptom is `token endpoint answered 400` in the log. Logs are JSON on stdout
    turn is a `chat` event (`list_events {label_skill: chat}` as an admin) with
    `captured_by: <the person>`, `captured_via: bridge:msteams` and the `captured_groups` the
    directories gave.
+7. With gateway verification: a reply that the bot "isn't set up correctly" and
+   `teams_misconfigured` in the gateway log mean the connector or its token endpoint refuses the
+   GATEWAY's bot credential — check `ESCUREL_AUTH_TEAMS_APP_ID`, `ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE]`
+   and `ESCUREL_AUTH_TEAMS_TOKEN_URL` (a single-tenant bot needs the same tenant token URL as the
+   bridge's `ESCUREL_BRIDGE_TEAMS_TOKEN_URL`). `identity_mismatch` names the field (object id,
+   tenant, email, UPN) the bridge's account disagrees with the Teams roster on.
 
 ## Not verified without a real tenant
 
@@ -450,9 +562,16 @@ the providers' documentation and have not been checked against a real tenant:
   `channelData.team.id` / `channel.id`, and `;messageid=<root>` in a channel thread's conversation
   id (the reply goes to that root);
 - the conversation-members API returning `email` / `userPrincipalName` for a tenant user;
+- gateway-side verification (#835): the members API answering `aadObjectId` and `tenantId`, and
+  `404` / `403` for a user not in a group chat or channel; the lifetime of Teams activity tokens
+  (the gateway re-checks the token on a re-mint within the turn); the default connector host list
+  (`smba.trafficmanager.net`, `*.botframework.com`) for the tenant's region and cloud;
 - Graph `transitiveMemberOf` with `GroupMember.Read.All` under admin consent, as an advanced query
   (`$count=true`, `ConsistencyLevel: eventual`), the `securityEnabled` / `groupTypes` fields, and
   its paging; `GET /users/{id}` with `User.Read.All` returning `mail` / `otherMails`;
 - Cloud Identity `searchTransitiveGroups` with the Groups Reader role or domain-wide delegation,
   the JWT-bearer token exchange, and the `discussion_forum` label filter;
-- Okta `users/{login}/groups` with an SSWS token from a read-only admin, and `Link` paging.
+- Okta `users/{login}/groups` with an SSWS token from a read-only admin, and `Link` paging;
+  the service-app token exchange (`private_key_jwt` at `/oauth2/v1/token`, the `okta.*` scopes,
+  the Read-only Administrator role on the app) and Okta's DPoP error codes
+  (`invalid_dpop_proof`, `use_dpop_nonce`).

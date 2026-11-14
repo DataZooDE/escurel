@@ -19,6 +19,7 @@ pub mod teams;
 pub use bridge::{Bridge, BridgeError};
 pub use channel::{
     Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, MemberProfile, UserRef,
+    Verified,
 };
 pub use config::{BridgeConfig, ConfigError};
 pub use store::Store;

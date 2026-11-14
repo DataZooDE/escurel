@@ -43,6 +43,10 @@ pub enum TurnState {
     /// The gateway declined the turn (an unmapped shared chat, a sender not
     /// in its group, an unreachable group directory); the notice was posted.
     Declined,
+    /// Refused without a reply (#835): the sender is not in the conversation,
+    /// or the gateway could not verify the activity — not a person's mistake,
+    /// so nothing is said.
+    Dropped,
     /// The platform refused the reply, or never took it after retries.
     SendFailed,
     /// The reply may have been delivered (no success came back after the
@@ -61,6 +65,7 @@ impl TurnState {
             Self::Expired => "expired",
             Self::Unmapped => "unmapped",
             Self::Declined => "declined",
+            Self::Dropped => "dropped",
             Self::SendFailed => "send_failed",
             Self::SendUncertain => "send_uncertain",
         }

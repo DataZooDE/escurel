@@ -957,7 +957,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  `chat_channel_unmapped` when no page maps it, `chat_channel_not_member` when the \
                  sender is not in `<g>`. The token is a bridge turn: at most 900 s, never admin, \
                  only the bridge's six tools, no `/ingest` `/blob` `/ws`. `unsupported` on a \
-                 gateway with no signing key or no Graph configuration.",
+                 gateway with no signing key or no Graph configuration. With \
+                 `ESCUREL_AUTH_TEAMS_APP_ID` set (#835) the gateway checks the asker itself: \
+                 `activity_token` must verify for that bot and bind `service_url` (on an \
+                 allow-listed connector host), else `activity_unverified`; the connector's roster \
+                 must hold `user_id` in `conversation.id`, else `not_in_conversation`; and the \
+                 object id, tenant, email and UPN are Microsoft's (`identity_mismatch` when the \
+                 bridge says otherwise). Mints are capped per bridge credential and per asker \
+                 (`rate_limited`, retryable, `retry_after_secs`).",
             json!({
                 "type": "object",
                 "required": ["channel", "tenant_id", "aad_object_id"],
@@ -968,6 +975,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "user_id": { "type": "string", "description": "The sender's channel user id (`{userId}` in the template)." },
                     "email": { "type": "string", "description": "The sender's email (Google / Okta key), from the Bot Framework members API." },
                     "upn": { "type": "string", "description": "The sender's user principal name (an Okta key with `ESCUREL_AUTH_OKTA_USER_KEY=upn`)." },
+                    "activity_token": { "type": "string", "description": "The inbound activity's Bot Framework bearer, forwarded verbatim; required when the gateway verifies Teams turns (#835). Never logged." },
+                    "service_url": { "type": "string", "description": "The activity's `serviceUrl`: the connector the token is bound to and the roster is asked at." },
                     "conversation": {
                         "type": "object",
                         "description": "Where the turn was asked; default a personal chat.",

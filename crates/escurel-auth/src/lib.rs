@@ -17,6 +17,7 @@
 //! jwks_refresh_secs  = 300
 //! ```
 
+pub mod bot_framework;
 mod client_credentials;
 mod jwks;
 mod signer;
@@ -24,7 +25,7 @@ mod token_file;
 mod verifier;
 
 pub use client_credentials::{ClientCredentials, ClientCredentialsError};
-pub use jwks::{Jwks, JwksCache};
+pub use jwks::{Jwks, JwksCache, MIN_REFRESH_INTERVAL as JWKS_MIN_REFRESH_INTERVAL};
 pub use signer::{
     AGENT_CLAIM, DELEGATION_PURPOSE, PURPOSE_CLAIM, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM,
     RunClaims as MintRunClaims, SKILL_CLAIM, SignError, Signer, TENANT_CLAIM, TRACE_ID_CLAIM,

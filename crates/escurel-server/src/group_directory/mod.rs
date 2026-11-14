@@ -81,9 +81,14 @@ pub enum DirectoryError {
     /// Try again later: a 429, a 5xx, a timeout, a dropped connection.
     #[error("{0} (retryable)")]
     Retryable(String),
-    /// Asking again will not help: 403, a refused URL, a bad answer.
+    /// Asking again will not help: a refused URL, a bad answer.
     #[error("{0}")]
     Permanent(String),
+    /// The service refused the request (403): a refusal like
+    /// [`Self::Permanent`], told apart for the Teams roster (#835), where it
+    /// means the user is not in the conversation.
+    #[error("{0}")]
+    Forbidden(String),
     /// The directory refused the credential (401): a service token is
     /// renewed and the call tried once more ([`authorized_get`]); after that,
     /// or for a static credential, it is a refusal like [`Self::Permanent`].
@@ -200,6 +205,11 @@ pub struct BridgeMintConfig {
     pub directories: Vec<DirectoryConfig>,
     pub cache_ttl: Duration,
     pub stale_ttl: Duration,
+    /// `ESCUREL_AUTH_TEAMS_*` (#835): the gateway verifies the Teams activity
+    /// and asks its roster itself; `None` trusts the bridge for who asked.
+    pub teams: Option<crate::teams_verify::TeamsVerifyConfig>,
+    /// `ESCUREL_AUTH_BRIDGE_MINT_*PER_MINUTE` (#835).
+    pub rate: crate::rate_limit::MintRateLimits,
 }
 
 impl BridgeMintConfig {
@@ -219,6 +229,10 @@ pub struct BridgeMint {
     /// The Entra tenant the Graph provider serves; `None` without Graph.
     pub graph_tenant: Option<String>,
     pub directories: GroupDirectories,
+    /// The gateway's own check of a Teams asker; `None` trusts the bridge.
+    pub teams: Option<crate::teams_verify::TeamsVerifier>,
+    /// The per-credential and per-asker mint caps.
+    pub limits: crate::rate_limit::MintLimiter,
 }
 
 impl BridgeMint {
@@ -233,6 +247,20 @@ impl BridgeMint {
             principal_template: cfg.principal_template.clone(),
             graph_tenant: cfg.graph_tenant().map(str::to_owned),
             directories: GroupDirectories::new(cfg, egress, reserved)?,
+            teams: match &cfg.teams {
+                Some(t) => Some(crate::teams_verify::TeamsVerifier::new(t, egress)),
+                None => {
+                    tracing::warn!(
+                        "mint_user_token trusts the chat bridge for WHO asked: a stolen \
+                         escurel:bridge credential could mint a token for anyone. Set \
+                         ESCUREL_AUTH_TEAMS_APP_ID and ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] (the \
+                         bot's app registration) so the gateway verifies the Teams activity and \
+                         its roster itself"
+                    );
+                    None
+                }
+            },
+            limits: crate::rate_limit::MintLimiter::new(cfg.rate),
         })
     }
 }
@@ -411,7 +439,7 @@ impl GroupDirectories {
                     Box::new(google::GoogleDirectory::new(c.clone(), Arc::clone(egress))?)
                 }
                 DirectoryConfig::Okta(c) => {
-                    Box::new(okta::OktaDirectory::new(c.clone(), Arc::clone(egress)))
+                    Box::new(okta::OktaDirectory::new(c.clone(), Arc::clone(egress))?)
                 }
             };
             providers.push(Provider::new(directory, d.rule().clone()));
@@ -572,7 +600,7 @@ fn egress_error(e: &EgressError) -> DirectoryError {
 }
 
 /// A token-endpoint failure as a directory error: 429/5xx and transport pass,
-/// everything else (a revoked secret, a bad key) does not.
+/// everything else (a revoked secret, a bad key, a DPoP demand) does not.
 fn token_error(e: &escurel_auth::ClientCredentialsError) -> DirectoryError {
     use escurel_auth::ClientCredentialsError as E;
     match e {
@@ -681,6 +709,7 @@ pub(crate) async fn get_json(
         let why = format!("the directory answered {status}");
         return Err(match status {
             401 => DirectoryError::Unauthorized(why),
+            403 => DirectoryError::Forbidden(why),
             404 => DirectoryError::NotFound(why),
             429 | 500.. => DirectoryError::Retryable(why),
             _ => DirectoryError::Permanent(why),

@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, DirectoryStandIn, EscurelProcess, FixtureBuilder, GRAPH_TENANT,
-    Opts, Role, WriteAclMode, bridge_mint,
+    AuthMode, BF_ISSUER, BotFrameworkStandIn, CONNECTOR_TOKEN, ConfigOverrides, DirectoryStandIn,
+    EscurelProcess, FixtureBuilder, GRAPH_TENANT, Opts, Role, TEAMS_KID, WEBCHAT_KID, WriteAclMode,
+    bridge_mint,
 };
 use serde_json::{Value, json};
 
@@ -930,4 +931,520 @@ async fn ambiguous_unmappable_unprincipled_and_unsupported_mints_are_refused_by_
     )
     .await;
     refused(&body, "unsupported", "no bridge minting configured");
+}
+
+// ---- #835: the gateway checks the Teams asker itself -------------------
+
+const BOT_APP: &str = "test-bot-app";
+const PERSONAL_CHAT: &str = "a:1personal";
+
+/// A gateway that verifies the forwarded activity token and asks the Bot
+/// Framework roster (the stand-in) itself, with Graph as its directory.
+struct Verified {
+    gw: EscurelProcess,
+    bf: BotFrameworkStandIn,
+    _graph: DirectoryStandIn,
+}
+
+async fn verified_world() -> Verified {
+    let graph = DirectoryStandIn::graph().await;
+    graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &[]);
+    graph.member_of(BOB_OID, &["escurel-support"]);
+    graph.known_as(BOB_OID, BOB_EMAIL, &[]);
+    let bf = BotFrameworkStandIn::start().await;
+    bf.add_member("29:alice", ALICE_OID, ALICE_EMAIL, GRAPH_TENANT);
+    bf.add_member("29:bob", BOB_OID, BOB_EMAIL, GRAPH_TENANT);
+    let mut mint = bridge_mint("user:{aadObjectId}", vec![graph.config("escurel-")], None);
+    mint.teams = Some(bf.gateway_verification(BOT_APP));
+    Verified {
+        gw: gateway(mint).await,
+        bf,
+        _graph: graph,
+    }
+}
+
+/// What the bridge sends for a 1:1 turn by `user` (as Teams names them), with
+/// the activity's bearer forwarded verbatim.
+fn verified_turn(bf: &BotFrameworkStandIn, user: &str, oid: &str, token: Option<&str>) -> Value {
+    let mut args = json!({ "channel": "msteams", "tenant_id": GRAPH_TENANT, "aad_object_id": oid,
+        "user_id": user, "service_url": bf.base,
+        "conversation": { "kind": "personal", "id": PERSONAL_CHAT } });
+    if let Some(t) = token {
+        args["activity_token"] = json!(t);
+    }
+    args
+}
+
+fn member_calls(bf: &BotFrameworkStandIn) -> usize {
+    bf.seen.lock().unwrap().member_calls
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_verified_asker_mints_with_microsofts_identity_and_the_roster_answer_is_cached() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    let minted = mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(minted["subject"], ALICE);
+    assert_eq!(
+        claims(minted["token"].as_str().unwrap())["roles"],
+        json!(["sales"])
+    );
+    assert_eq!(member_calls(&w.bf), 1, "the gateway asked the roster");
+    assert_eq!(
+        w.bf.seen.lock().unwrap().member_authorizations[0],
+        format!("Bearer {CONNECTOR_TOKEN}"),
+        "with the bot's own connector token"
+    );
+    // The bridge asserted no email; the gateway used Microsoft's. A busy chat asks once.
+    mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(member_calls(&w.bf), 1, "a positive roster answer is cached");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forged_identity_disagrees_with_the_roster_and_is_refused() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    // Alice's Teams id, Bob's object id: the roster says Alice.
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        verified_turn(&w.bf, "29:alice", BOB_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "identity_mismatch", "a forged aad_object_id");
+    assert_eq!(body["error"]["data"]["retryable"], false);
+    let mut email = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    email["email"] = json!(BOB_EMAIL);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", email).await;
+    refused(&body, "identity_mismatch", "a forged email");
+    let mut tenant = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    tenant["tenant_id"] = json!("another-tenant");
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", tenant).await;
+    refused(&body, "identity_mismatch", "a forged tenant");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sender_the_conversation_roster_lacks_is_not_in_conversation() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    w.bf.remove_from(PERSONAL_CHAT, "29:bob");
+    for (user, oid, why) in [
+        ("29:bob", BOB_OID, "taken off this conversation"),
+        ("29:mallory", ALICE_OID, "nobody Teams knows"),
+    ] {
+        let (_, body) = call(
+            &w.gw,
+            &bridge_credential(&w.gw),
+            "mint_user_token",
+            verified_turn(&w.bf, user, oid, Some(&token)),
+        )
+        .await;
+        refused(&body, "not_in_conversation", why);
+        assert_eq!(body["error"]["data"]["retryable"], false, "{why}");
+    }
+    // In a group chat too: the roster check holds for every conversation kind.
+    map_group_chat(&w.gw, "sales").await;
+    w.bf.remove_from(GROUP_CHAT, "29:alice");
+    let mut group = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    group["conversation"] = json!({ "kind": "group", "id": GROUP_CHAT });
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", group).await;
+    refused(&body, "not_in_conversation", "a group chat");
+    // 403 is a refusal like 404; a 5xx is an outage, retryable.
+    for (status, code, retryable) in [
+        (403u16, "not_in_conversation", false),
+        (503, "directory_unavailable", true),
+    ] {
+        w.bf.seen.lock().unwrap().member_status = Some(status);
+        let (_, body) = call(
+            &w.gw,
+            &bridge_credential(&w.gw),
+            "mint_user_token",
+            verified_turn(&w.bf, "29:bob", BOB_OID, Some(&token)),
+        )
+        .await;
+        refused(&body, code, &status.to_string());
+        assert_eq!(body["error"]["data"]["retryable"], retryable, "{status}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_expired_or_foreign_activity_token_is_unverified() {
+    let w = verified_world().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claims_with = |patch: Value| {
+        let mut c = json!({ "iss": BF_ISSUER, "aud": BOT_APP, "serviceurl": w.bf.base,
+                            "nbf": now - 5, "iat": now - 5, "exp": now + 600 });
+        for (k, v) in patch.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        c
+    };
+    let cases = [
+        (None, "no token"),
+        (
+            Some(w.bf.sign(
+                &claims_with(json!({ "exp": now - 3600, "nbf": now - 7200 })),
+                TEAMS_KID,
+            )),
+            "expired",
+        ),
+        (Some(w.bf.token("another-bot")), "another bot's audience"),
+        (
+            Some(w.bf.sign(
+                &claims_with(json!({ "iss": "https://evil.example" })),
+                TEAMS_KID,
+            )),
+            "another issuer",
+        ),
+        (
+            Some(w.bf.token_with_kid(BOT_APP, WEBCHAT_KID)),
+            "a key not endorsed for Teams",
+        ),
+        (Some("not-a-jwt".to_owned()), "garbage"),
+        (
+            Some(unsigned(
+                json!({ "alg": "HS256", "typ": "JWT", "kid": TEAMS_KID }),
+                &claims_with(json!({})),
+            )),
+            "HS256 alg confusion",
+        ),
+        (
+            Some(unsigned(
+                json!({ "alg": "none", "typ": "JWT", "kid": TEAMS_KID }),
+                &claims_with(json!({})),
+            )),
+            "alg none",
+        ),
+        (
+            Some(unsigned(
+                json!({ "alg": "RS256", "typ": "JWT" }),
+                &claims_with(json!({})),
+            )),
+            "no kid",
+        ),
+        (
+            Some(w.bf.sign(&claims_with(json!({})), "a-kid-nobody-publishes")),
+            "an unknown kid",
+        ),
+        (
+            Some(w.bf.sign(&claims_with(json!({ "nbf": now + 3600 })), TEAMS_KID)),
+            "nbf beyond the leeway",
+        ),
+        (
+            Some(w.bf.sign(
+                &{
+                    let mut c = claims_with(json!({}));
+                    c.as_object_mut().unwrap().remove("serviceurl");
+                    c
+                },
+                TEAMS_KID,
+            )),
+            "no serviceurl claim",
+        ),
+    ];
+    for (token, why) in cases {
+        let (_, body) = call(
+            &w.gw,
+            &bridge_credential(&w.gw),
+            "mint_user_token",
+            verified_turn(&w.bf, "29:alice", ALICE_OID, token.as_deref()),
+        )
+        .await;
+        refused(&body, "activity_unverified", why);
+        assert_eq!(body["error"]["data"]["retryable"], false, "{why}");
+    }
+    assert_eq!(
+        member_calls(&w.bf),
+        0,
+        "nothing unverified reaches the roster"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_service_url_the_token_does_not_bind_or_the_allow_list_lacks_gets_no_bearer() {
+    let w = verified_world().await;
+    // The same stand-in under a name the allow-list (127.0.0.1) does not hold.
+    let elsewhere = w.bf.base.replace("127.0.0.1", "localhost");
+    // The token is bound to the real serviceUrl; the bridge names another.
+    let mut moved = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&w.bf.token(BOT_APP)));
+    moved["service_url"] = json!(elsewhere);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", moved).await;
+    refused(
+        &body,
+        "activity_unverified",
+        "a serviceUrl the token does not bind",
+    );
+    // A genuine token bound to a host the gateway does not send its bearer to.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let foreign = w.bf.sign(
+        &json!({ "iss": BF_ISSUER, "aud": BOT_APP, "serviceurl": elsewhere,
+                 "nbf": now - 5, "iat": now - 5, "exp": now + 600 }),
+        TEAMS_KID,
+    );
+    let mut unlisted = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&foreign));
+    unlisted["service_url"] = json!(elsewhere);
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        unlisted,
+    )
+    .await;
+    refused(&body, "activity_unverified", "a host off the allow-list");
+    let seen = w.bf.seen.lock().unwrap();
+    assert!(
+        seen.member_authorizations.is_empty() && seen.token_requests.is_empty(),
+        "the stand-in saw no bearer and no token request: {:?}",
+        seen.member_authorizations
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unverifying_gateway_trusts_the_bridge_as_before() {
+    let w = world().await;
+    // No activity token, no service URL: today's contract.
+    let minted = mint(&w.gw, personal(ALICE_OID)).await;
+    assert_eq!(minted["subject"], ALICE);
+}
+
+// ---- #835: the mint rate limit ----------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mints_are_capped_per_bridge_credential_and_per_asker() {
+    let graph = DirectoryStandIn::graph().await;
+    for oid in [ALICE_OID, BOB_OID, "carol-oid", "dave-oid"] {
+        graph.member_of(oid, &["escurel-sales"]);
+    }
+    let mut cfg = bridge_mint("user:{aadObjectId}", vec![graph.config("escurel-")], None);
+    // A burst of 2 per credential (one more every 30 s) and 1 per asker (one every 60 s): every
+    // refusal below follows its bucket's last token by milliseconds, so a refill cannot land in
+    // between on a slow runner (crew F14).
+    cfg.rate = escurel_server::rate_limit::MintRateLimits {
+        per_credential_per_minute: 2,
+        per_asker_per_minute: 1,
+    };
+    let gw = gateway(cfg).await;
+    let one = bridge_credential(&gw);
+    let other = gw.mint_token_with_groups(TENANT, "svc:chat-bridge-2", &["escurel:bridge"], false);
+    let mint_as = |cred: String, oid: &'static str| {
+        let gw = &gw;
+        async move { call(gw, &cred, "mint_user_token", personal(oid)).await.1 }
+    };
+    ok(&mint_as(one.clone(), ALICE_OID).await, "alice's first");
+    ok(
+        &mint_as(one.clone(), BOB_OID).await,
+        "bob on the first bridge",
+    );
+    let body = mint_as(one.clone(), "carol-oid").await;
+    refused(&body, "rate_limited", "the per-credential cap");
+    assert_eq!(body["error"]["data"]["scope"], "credential", "{body}");
+    assert_eq!(body["error"]["data"]["retryable"], true);
+    assert!(
+        body["error"]["data"]["retry_after_secs"].as_u64().unwrap() >= 1,
+        "{body}"
+    );
+    // Alice again, on another bridge: her own bucket is empty, whichever bridge asks.
+    let body = mint_as(other.clone(), ALICE_OID).await;
+    refused(&body, "rate_limited", "the per-asker cap");
+    assert_eq!(body["error"]["data"]["scope"], "asker", "{body}");
+    // The other credential spent one token on that refusal and is not held back by the first.
+    ok(&mint_as(other, "dave-oid").await, "dave on another bridge");
+}
+
+/// Crew F1: Microsoft's signing keys out of reach is an outage, not a forged
+/// token — retryable, and the next mint after recovery succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signing_key_outage_is_retryable_and_recovers() {
+    let w = verified_world().await;
+    w.bf.seen.lock().unwrap().jwks_fail = 0..1;
+    let token = w.bf.token(BOT_APP);
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "directory_unavailable", "the JWKS answered 503");
+    assert_eq!(body["error"]["data"]["retryable"], true, "{body}");
+    let minted = mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(minted["subject"], ALICE);
+}
+
+/// Crew F4: the tenant is Microsoft's, else the one Graph serves, never the
+/// bridge's; a roster entry without an object id is nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_roster_answer_without_a_tenant_or_object_id_never_takes_the_bridges() {
+    use escurel_test_support::RosterMember;
+    let w = verified_world().await;
+    let tenantless = |aad: Option<&str>| RosterMember {
+        aad_object_id: aad.map(str::to_owned),
+        email: ALICE_EMAIL.to_owned(),
+        tenant_id: None,
+    };
+    let token = w.bf.token(BOT_APP);
+    // With Graph, its tenant stands in.
+    w.bf.add_roster_member("29:alice", tenantless(Some(ALICE_OID)));
+    let minted = mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(minted["subject"], ALICE);
+    // No object id: no principal.
+    w.bf.add_roster_member("29:guest", tenantless(None));
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        verified_turn(&w.bf, "29:guest", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "no_principal", "no aadObjectId on the roster");
+
+    // Without Graph there is nothing to stand in: refused, whatever the bridge says.
+    let bf = BotFrameworkStandIn::start().await;
+    bf.add_roster_member("29:alice", tenantless(Some(ALICE_OID)));
+    let mut cfg = bridge_mint("user:{aadObjectId}", vec![], None);
+    cfg.teams = Some(bf.gateway_verification(BOT_APP));
+    let gw = gateway(cfg).await;
+    let token = bf.token(BOT_APP);
+    let (_, body) = call(
+        &gw,
+        &bridge_credential(&gw),
+        "mint_user_token",
+        verified_turn(&bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "identity_mismatch", "no tenant from Teams, no Graph");
+}
+
+/// Crew F6: the connector refusing the GATEWAY's own bot credential is a
+/// misconfiguration an admin fixes, not "try again later" — while a 403 or
+/// 404 about the user stays `not_in_conversation`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_bot_credential_is_teams_misconfigured() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    let turn = || verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    // The token endpoint refuses the app secret.
+    w.bf.seen.lock().unwrap().token_status = Some(401);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(&body, "teams_misconfigured", "the token endpoint refused");
+    assert_eq!(body["error"]["data"]["retryable"], false);
+    // A token, but the connector answers 401 even after a renewal.
+    w.bf.seen.lock().unwrap().token_status = None;
+    w.bf.seen.lock().unwrap().member_status = Some(401);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(
+        &body,
+        "teams_misconfigured",
+        "the connector refused the bearer",
+    );
+    w.bf.seen.lock().unwrap().member_status = Some(403);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(&body, "not_in_conversation", "a 403 about the user");
+}
+
+/// Crew F5, pinned: the Bot Framework signs no activity body, so a token binds
+/// the bot and the connector, not the conversation. One accepted token
+/// therefore verifies a mint for ANOTHER conversation the sender is in; the
+/// roster check is what stops anyone who is in none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_activity_token_does_not_bind_its_conversation() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    let mut elsewhere = verified_turn(&w.bf, "29:bob", BOB_OID, Some(&token));
+    elsewhere["conversation"]["id"] = json!("a:1another-personal-chat");
+    let minted = mint(&w.gw, elsewhere).await;
+    assert_eq!(
+        minted["subject"], "user:bob-oid",
+        "the same token, another chat and person"
+    );
+}
+
+/// A JWT with `header` and `claims` and a signature that is no signature: for
+/// the cases refused before any key is consulted.
+fn unsigned(header: Value, claims: &Value) -> String {
+    let b64 = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+    format!(
+        "{}.{}.{}",
+        b64(header.to_string().as_bytes()),
+        b64(claims.to_string().as_bytes()),
+        b64(b"not-a-signature")
+    )
+}
+
+/// Crew F9: the roster cache is keyed by the conversation too — Alice's 1:1
+/// answer must not vouch for a group chat she has left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cached_roster_answer_never_vouches_for_another_conversation() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    map_group_chat(&w.gw, "sales").await;
+    w.bf.remove_from(GROUP_CHAT, "29:alice");
+    let mut group = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    group["conversation"] = json!({ "kind": "group", "id": GROUP_CHAT });
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", group).await;
+    refused(&body, "not_in_conversation", "a group chat she is not in");
+    assert_eq!(
+        member_calls(&w.bf),
+        2,
+        "the group chat was asked about, not cached"
+    );
+}
+
+/// Crew F12: with verification on, a mapped group chat labelled `personal`
+/// (which would skip the mapping and the membership check) is refused, as is
+/// a channel turn that names no team.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conversation_kind_its_teams_id_contradicts_is_refused() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    for (conversation, why) in [
+        (
+            json!({ "kind": "personal", "id": GROUP_CHAT }),
+            "a group chat as personal",
+        ),
+        (
+            json!({ "kind": "channel", "id": "19:c@thread.tacv2;messageid=1" }),
+            "a channel with no team",
+        ),
+    ] {
+        let mut turn = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+        turn["conversation"] = conversation;
+        let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn).await;
+        refused(&body, "identity_mismatch", why);
+    }
+    assert_eq!(member_calls(&w.bf), 0, "refused before the roster is asked");
 }

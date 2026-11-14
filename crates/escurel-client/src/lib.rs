@@ -112,7 +112,7 @@ pub use escurel_types::runtime::{
     ClaimEventRequest, ClaimEventResponse, EventClaim, ListRuntimesResponse, Requires,
     RuntimeHarness, RuntimeInfo,
 };
-pub use secrecy::SecretString;
+pub use secrecy::{ExposeSecret, SecretString};
 
 use serde_json::{Value, json};
 

@@ -154,7 +154,8 @@ signing key: on its own `escurel:bridge` credential it calls `mint_user_token` o
 `user:{aadObjectId}` — it must equal the `sub` the person's own token carries) and the groups: the
 **union** of the sender's memberships in every directory of `ESCUREL_AUTH_GROUP_DIRECTORIES`
 (`graph` by Entra object id, `google` and `okta` by email, which the bridge reads from the Bot
-Framework members API), mapped per provider by `…_GROUP_MAP_FILE` (by group id — prefer it)
+Framework members API; Okta by an admin's API token or, with `ESCUREL_AUTH_OKTA_AUTH=oauth`, as an
+API Services app with a private key), mapped per provider by `…_GROUP_MAP_FILE` (by group id — prefer it)
 and/or `…_GROUP_PREFIX` — `public` / `owner` / `admin` / `escurel:*` and the deployment's role
 values are never produced. A prefix reads only names an admin controls: Graph security groups
 (Microsoft 365 groups / Teams only with `ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS=true`, since any
@@ -167,6 +168,26 @@ stands in for up to 1 h while a directory is unreachable, then the turn is refus
 answering 403/404 (or 401 after one token renewal) adds nothing and replaces its cached answer.
 Without `ESCUREL_AUTH_GROUP_DIRECTORIES` 1:1 turns mint with no groups and shared chats are
 refused (`chat_channel_no_directory`).
+A directory URL must be https; a local stand-in over plain http (loopback only) needs
+`ESCUREL_EGRESS_ALLOW_LOOPBACK=true`, or the gateway refuses to boot.
+
+**The gateway can check the Teams asker itself** (#835, recommended for production). With
+`ESCUREL_AUTH_TEAMS_APP_ID` + `ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE]` (the bot's own app
+registration) the bridge forwards each activity's Bot Framework bearer, and the gateway verifies
+it (`activity_unverified` when missing, invalid, or bound to a `serviceUrl` other than the turn's
+or off `ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS`), asks the connector's roster whether the sender is in
+that conversation (`not_in_conversation`), and takes the object id, tenant, email and UPN from
+Microsoft (`identity_mismatch` when the bridge disagrees). It does not bind the conversation: the
+Bot Framework signs no activity body, so a stolen bridge credential plus a captured, unexpired
+activity token can still mint for any member of any conversation the bot is in on that
+`serviceUrl`, until the token expires; what the roster check stops is a person in no such
+conversation, and forged identity fields. A connector or token endpoint that refuses the gateway's own bot credential is
+`teams_misconfigured` (not retryable; a single-tenant bot needs `ESCUREL_AUTH_TEAMS_TOKEN_URL`). The bridge drops a refused
+`not_in_conversation` / `activity_unverified` silently, but asks the person to ask again when the
+proof was lost in a restart or expired mid-turn. Unset, the gateway trusts the bridge for who asked and warns once at boot. Mints are
+rate-capped per bridge credential (`ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE`, 600) and per asker
+(`…_PER_ASKER_PER_MINUTE`, 30): `rate_limited`, retryable; the person is told once to try again
+in a minute.
 
 **Identity.** The subject comes from the object id, the email-keyed groups from the email. With
 `graph` configured the gateway binds them: the asserted email / UPN must be one of the sender's

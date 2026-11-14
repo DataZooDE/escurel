@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use reqwest::Url;
 use tokio::sync::Semaphore;
@@ -173,6 +173,20 @@ impl EgressPolicy {
         Ok(p)
     }
 
+    /// The development / test policy: exactly what `ESCUREL_EGRESS_ALLOW_LOOPBACK=true` boots
+    /// with, through the same parser (so a test exercises the operator's path, warning
+    /// included), and nothing else changed.
+    ///
+    /// # Panics
+    /// Never: the one key it sets parses.
+    #[must_use]
+    pub fn dev() -> Self {
+        Self::from_source(&|k: &str| {
+            (k == "ESCUREL_EGRESS_ALLOW_LOOPBACK").then(|| "true".to_owned())
+        })
+        .expect("the dev flag parses")
+    }
+
     /// [`Self::from_source`] over the process environment.
     ///
     /// # Errors
@@ -315,7 +329,7 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
 /// Per-endpoint call limiter: a concurrency semaphore plus a token bucket.
 struct Limiter {
     sem: Arc<Semaphore>,
-    bucket: Mutex<(f64, Instant)>,
+    bucket: crate::rate_limit::TokenBucket,
 }
 
 /// Whether `body` (the bytes of an event stream so far) holds a COMPLETE event whose `data:` is a
@@ -469,7 +483,10 @@ impl Egress {
         Arc::clone(map.entry(key.to_owned()).or_insert_with(|| {
             Arc::new(Limiter {
                 sem: Arc::new(Semaphore::new(self.policy.max_concurrency.max(1))),
-                bucket: Mutex::new((f64::from(self.policy.rate_per_sec.max(1)), Instant::now())),
+                bucket: {
+                    let rate = f64::from(self.policy.rate_per_sec.max(1));
+                    crate::rate_limit::TokenBucket::new(rate, rate)
+                },
             })
         }))
     }
@@ -487,18 +504,11 @@ impl Egress {
             self.count("limited");
             EgressError::RateLimited
         })?;
-        let rate = f64::from(self.policy.rate_per_sec.max(1));
-        let mut b = lim.bucket.lock().expect("bucket");
-        let now = Instant::now();
-        let refill = now.duration_since(b.1).as_secs_f64() * rate;
-        b.0 = (b.0 + refill).min(rate);
-        b.1 = now;
-        if b.0 < 1.0 {
+        if lim.bucket.take().is_err() {
             // `permit` is dropped here: the slot is released, the bucket untouched.
             self.count("limited");
             return Err(EgressError::RateLimited);
         }
-        b.0 -= 1.0;
         Ok(permit)
     }
 

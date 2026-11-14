@@ -78,6 +78,15 @@ pub struct Attachment {
     pub url: String,
 }
 
+/// A verified webhook: its payload, and the platform's proof of it that the
+/// gateway can check again for itself (the Teams activity's bearer, #835).
+/// The proof lives only as long as the turn's task: never logged, never in
+/// the state store.
+pub struct Verified {
+    pub payload: Value,
+    pub proof: Option<escurel_client::SecretString>,
+}
+
 /// Why an inbound request was refused. Every variant is a `401`: the caller
 /// could not prove it is the platform.
 #[derive(Debug, thiserror::Error)]
@@ -138,12 +147,12 @@ pub trait ChatChannel: Send + Sync + 'static {
     /// namespace of message ids in the state store.
     fn name(&self) -> &'static str;
 
-    /// Authenticate a webhook request and return its payload.
+    /// Authenticate a webhook request and return its payload (and proof).
     fn verify_inbound(
         &self,
         headers: &HeaderMap,
         body: &[u8],
-    ) -> impl Future<Output = Result<Value, InboundError>> + Send;
+    ) -> impl Future<Output = Result<Verified, InboundError>> + Send;
 
     /// The turn to answer in a verified payload; `None` for anything that is
     /// not a person's message (a join, a reaction, the bot's own echo).

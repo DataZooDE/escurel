@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use escurel_auth::Signer;
 use escurel_client::{
-    AppendMessageRequest, CaptureEventRequest, Client, ListMessagesRequest, SecretString,
-    UpdatePageRequest,
+    AppendMessageRequest, CaptureEventRequest, Client, ExposeSecret, ListMessagesRequest,
+    SecretString, UpdatePageRequest,
 };
 use escurel_types::chat_channel::ConversationKind;
 use serde_json::{Value, json};
@@ -57,6 +57,9 @@ const SEND_ATTEMPTS: u32 = 3;
 const MAX_WORK_BACKOFF: Duration = Duration::from_secs(30);
 /// How often open turns nothing is working on are picked up again.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The longest a turn waits out the gateway's per-credential mint cap.
+const MAX_RATE_WAIT: Duration = Duration::from_secs(10);
 
 /// How many times a turn asks Teams who the sender is before telling them it
 /// cannot check their access (crew U-F6).
@@ -77,30 +80,20 @@ pub enum Decline {
     NoDirectory,
     /// The deprecated self-signed bridge answers 1:1 chats only.
     OneToOneOnly,
+    /// The gateway's mint rate limit for this bridge or this asker (#835).
+    RateLimited,
+    /// A turn resumed after a restart: its activity proof is gone (it is
+    /// never stored), so a verifying gateway mints nothing for it (crew F2).
+    LostInRestart,
+    /// The activity proof expired while the turn was still being worked
+    /// (a re-mint after capture, crew F3): the person asks again.
+    ProofExpired,
     /// The bridge or the gateway is set up wrong: asking again cannot help.
     /// The gateway's code, logged at ERROR with what to fix.
     Misconfigured(&'static str),
 }
 
 impl Decline {
-    fn from_code(code: &str) -> Option<Self> {
-        use escurel_types::chat_channel::mint_codes as c;
-        Some(match code {
-            c::UNMAPPED => Self::Unmapped,
-            c::AMBIGUOUS => Self::Ambiguous,
-            c::NOT_MEMBER => Self::NotMember,
-            c::DIRECTORY_UNAVAILABLE => Self::Unavailable,
-            c::NO_DIRECTORY => Self::NoDirectory,
-            c::IDENTITY_MISMATCH => Self::Misconfigured(c::IDENTITY_MISMATCH),
-            c::TENANT_NOT_SERVED => Self::Misconfigured(c::TENANT_NOT_SERVED),
-            c::UNSUPPORTED => Self::Misconfigured(c::UNSUPPORTED),
-            c::BRIDGE_REQUIRED => Self::Misconfigured(c::BRIDGE_REQUIRED),
-            "admin_required" => Self::Misconfigured("admin_required"),
-            "agent_scope_denied" => Self::Misconfigured("agent_scope_denied"),
-            _ => return None,
-        })
-    }
-
     /// What an operator changes for a [`Self::Misconfigured`] code.
     fn fix(code: &str) -> &'static str {
         use escurel_types::chat_channel::mint_codes as c;
@@ -114,7 +107,15 @@ impl Decline {
                  ESCUREL_AUTH_GRAPH_TENANT_ID does not serve"
             }
             c::IDENTITY_MISMATCH => {
-                "Teams' member profile names an email Graph does not know this sender by"
+                "the sender's claims disagree with the gateway's source of truth: an email / UPN \
+                 Graph does not know them by, or (with ESCUREL_AUTH_TEAMS_APP_ID) an object id, \
+                 tenant, email or UPN other than the Teams roster's — see the gateway's log"
+            }
+            c::TEAMS_MISCONFIGURED => {
+                "the Teams connector refuses the GATEWAY's bot credential: check \
+                 ESCUREL_AUTH_TEAMS_APP_ID, ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] and \
+                 ESCUREL_AUTH_TEAMS_TOKEN_URL (a single-tenant bot: the same tenant token URL as \
+                 ESCUREL_BRIDGE_TEAMS_TOKEN_URL)"
             }
             _ => {
                 "ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE] must be the bridge's own credential with the \
@@ -152,11 +153,50 @@ impl Decline {
             Self::OneToOneOnly => {
                 "I only answer 1:1 chats on this bridge. Please message me directly.".to_owned()
             }
+            Self::RateLimited => "I'm getting a lot of questions right now, please try again \
+                 in a minute."
+                .to_owned(),
+            Self::LostInRestart => {
+                "I lost your question in a restart — please ask again.".to_owned()
+            }
+            Self::ProofExpired => {
+                "I lost track of your question before I could finish it — please ask again."
+                    .to_owned()
+            }
             Self::Misconfigured(_) => "I can't answer right now: this bot isn't set up \
                  correctly. Please tell your escurel admin."
                 .to_owned(),
         }
     }
+}
+
+/// The one table from `mint_user_token`'s refusal codes to what the bridge
+/// does with a turn (crew F15): tell the person once, drop it silently, ask
+/// them to ask again, or give up on the sender. `None`: a plain gateway
+/// error, retried like any other.
+fn classify(code: &str, message: &str) -> Option<BridgeError> {
+    use escurel_types::chat_channel::mint_codes as c;
+    Some(match code {
+        c::UNMAPPED => BridgeError::Declined(Decline::Unmapped),
+        c::AMBIGUOUS => BridgeError::Declined(Decline::Ambiguous),
+        c::NOT_MEMBER => BridgeError::Declined(Decline::NotMember),
+        c::DIRECTORY_UNAVAILABLE => BridgeError::Declined(Decline::Unavailable),
+        c::NO_DIRECTORY => BridgeError::Declined(Decline::NoDirectory),
+        c::RATE_LIMITED => BridgeError::Declined(Decline::RateLimited),
+        c::IDENTITY_MISMATCH => BridgeError::Declined(Decline::Misconfigured(c::IDENTITY_MISMATCH)),
+        c::TEAMS_MISCONFIGURED => {
+            BridgeError::Declined(Decline::Misconfigured(c::TEAMS_MISCONFIGURED))
+        }
+        c::TENANT_NOT_SERVED => BridgeError::Declined(Decline::Misconfigured(c::TENANT_NOT_SERVED)),
+        c::UNSUPPORTED => BridgeError::Declined(Decline::Misconfigured(c::UNSUPPORTED)),
+        c::BRIDGE_REQUIRED => BridgeError::Declined(Decline::Misconfigured(c::BRIDGE_REQUIRED)),
+        "admin_required" => BridgeError::Declined(Decline::Misconfigured("admin_required")),
+        "agent_scope_denied" => BridgeError::Declined(Decline::Misconfigured("agent_scope_denied")),
+        c::NOT_IN_CONVERSATION => BridgeError::Dropped(c::NOT_IN_CONVERSATION),
+        c::ACTIVITY_UNVERIFIED => BridgeError::Unverified,
+        c::NO_PRINCIPAL => BridgeError::NoPrincipal(message.to_owned()),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +205,13 @@ pub enum BridgeError {
     NoPrincipal(String),
     #[error("the gateway declined the turn: {0:?}")]
     Declined(Decline),
+    /// Refused with no reply (#835): the sender is not in the conversation.
+    #[error("dropped without a reply: {0}")]
+    Dropped(&'static str),
+    /// The gateway did not accept the turn's activity proof (or there was
+    /// none to forward): what that means depends on the turn (see `spawn`).
+    #[error("the gateway could not verify the turn's activity")]
+    Unverified,
     #[error("signing the asker's token: {0}")]
     Sign(String),
     #[error("mint_user_token: {0}")]
@@ -222,7 +269,11 @@ impl<C: ChatChannel> Bridge<C> {
     ///
     /// # Errors
     /// The state store refuses the write.
-    pub fn accept(self: &Arc<Self>, payload: &Value) -> Result<(), BridgeError> {
+    pub fn accept(
+        self: &Arc<Self>,
+        payload: &Value,
+        proof: Option<SecretString>,
+    ) -> Result<(), BridgeError> {
         let Some(turn) = self.channel.to_capture(payload) else {
             return Ok(());
         };
@@ -230,16 +281,21 @@ impl<C: ChatChannel> Bridge<C> {
             tracing::info!(message_id = %turn.message_id, "chat bridge: replayed message, ignored");
             return Ok(());
         };
-        self.spawn(OpenTurn {
-            turn,
-            state: TurnState::Received,
-            admitted_ms,
-        });
+        self.spawn(
+            OpenTurn {
+                turn,
+                state: TurnState::Received,
+                admitted_ms,
+            },
+            proof,
+        );
         Ok(())
     }
 
     /// Pick up the open turns nothing is working on: at boot, the ones a
-    /// previous process left; on each sweep, any whose task ended.
+    /// previous process left; on each sweep, any whose task ended. Their
+    /// activity proof is gone (it is never stored), so a gateway that
+    /// verifies it refuses a resumed turn's mint (#835).
     ///
     /// # Errors
     /// The state store cannot be read.
@@ -247,7 +303,7 @@ impl<C: ChatChannel> Bridge<C> {
         let open = self.store.open_turns(self.channel.name())?;
         let mut n = 0;
         for turn in open {
-            n += usize::from(self.spawn(turn));
+            n += usize::from(self.spawn(turn, None));
         }
         Ok(n)
     }
@@ -284,7 +340,7 @@ impl<C: ChatChannel> Bridge<C> {
     /// the deadline the person is told it timed out. A person the template
     /// cannot map is closed, so nothing retries them forever. `false` when a
     /// task already works this turn.
-    fn spawn(self: &Arc<Self>, open: OpenTurn) -> bool {
+    fn spawn(self: &Arc<Self>, open: OpenTurn, proof: Option<SecretString>) -> bool {
         let id = open.turn.key();
         if !self
             .working
@@ -300,7 +356,10 @@ impl<C: ChatChannel> Bridge<C> {
             let deadline = this.deadline(&open);
             let mut backoff = this.cfg.poll_interval;
             let mut attempt = 0u32;
-            let mut memory = TurnMemory::default();
+            let mut memory = TurnMemory {
+                proof,
+                ..TurnMemory::default()
+            };
             loop {
                 attempt += 1;
                 if Instant::now() >= deadline {
@@ -314,6 +373,54 @@ impl<C: ChatChannel> Bridge<C> {
                         let _ = this
                             .store
                             .close(this.channel.name(), &id, TurnState::Unmapped);
+                        break;
+                    }
+                    // Not a person's mistake (a forged or stale activity, someone not in the
+                    // chat): nothing to tell anyone, and nothing to retry.
+                    Err(BridgeError::Dropped(code)) if open.state == TurnState::Received => {
+                        tracing::warn!(message_id = %id, code,
+                            "chat bridge: the turn was refused without a reply");
+                        let _ = this
+                            .store
+                            .close(this.channel.name(), &id, TurnState::Dropped);
+                        break;
+                    }
+                    // A proof the gateway refused before anything was captured: a forged or stale
+                    // activity, nobody to tell. No proof at all (a resumed turn), or a proof that
+                    // expired mid-turn: a person is waiting, so they are asked to ask again — at
+                    // once, never retried until the deadline (crew F2, F3).
+                    Err(BridgeError::Unverified) => {
+                        let why = if memory.proof.is_none() {
+                            Some(Decline::LostInRestart)
+                        } else if open.state == TurnState::Received {
+                            None
+                        } else {
+                            Some(Decline::ProofExpired)
+                        };
+                        let Some(why) = why else {
+                            tracing::warn!(message_id = %id,
+                                code = escurel_types::chat_channel::mint_codes::ACTIVITY_UNVERIFIED,
+                                "chat bridge: the turn was refused without a reply");
+                            let _ = this
+                                .store
+                                .close(this.channel.name(), &id, TurnState::Dropped);
+                            break;
+                        };
+                        tracing::warn!(message_id = %id, decline = ?why,
+                            "chat bridge: the gateway could not verify the turn's activity; \
+                             asking the person to ask again");
+                        if let Err(e) = this
+                            .reply(
+                                &open.turn,
+                                "declined",
+                                &why.notice(&open.turn),
+                                TurnState::Declined,
+                            )
+                            .await
+                        {
+                            tracing::error!(message_id = %id, error = %e,
+                                "chat bridge: could not record the decline");
+                        }
                         break;
                     }
                     // Only a turn not yet in escurel is declined: once its question is captured
@@ -376,7 +483,7 @@ impl<C: ChatChannel> Bridge<C> {
         let inbound = open.turn.clone();
         let turn = &inbound;
         let name = self.channel.name();
-        let mut asker = AskerClient::new(self, turn, memory);
+        let mut asker = AskerClient::new(self, turn, memory, deadline);
         let (client, principal) = asker.get().await?;
         let page_id = format!(
             "markdown/instances/{}/{}.md",
@@ -657,6 +764,8 @@ async fn ingest(
 struct TurnMemory {
     profile: Option<crate::channel::MemberProfile>,
     profile_failures: u32,
+    /// The platform's proof of the activity, forwarded to the gateway's mint.
+    proof: Option<SecretString>,
 }
 
 /// The turn's client, re-minted before its token gets old, and the subject
@@ -666,15 +775,24 @@ struct AskerClient<'a, C: ChatChannel> {
     turn: &'a InboundTurn,
     memory: &'a mut TurnMemory,
     current: Option<(Client, String, Instant)>,
+    /// When the turn's reply is due: a short credential cap is waited out
+    /// only if the answer can still make it (crew F16).
+    deadline: Instant,
 }
 
 impl<'a, C: ChatChannel> AskerClient<'a, C> {
-    fn new(bridge: &'a Bridge<C>, turn: &'a InboundTurn, memory: &'a mut TurnMemory) -> Self {
+    fn new(
+        bridge: &'a Bridge<C>,
+        turn: &'a InboundTurn,
+        memory: &'a mut TurnMemory,
+        deadline: Instant,
+    ) -> Self {
         Self {
             bridge,
             turn,
             memory,
             current: None,
+            deadline,
         }
     }
 
@@ -725,6 +843,10 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                 self.memory.profile = Some(p.clone());
                 Ok(p)
             }
+            // The platform says the sender is not in this conversation.
+            Err(crate::channel::ChannelError::Refused { status: 404, .. }) => Err(
+                BridgeError::Dropped(escurel_types::chat_channel::mint_codes::NOT_IN_CONVERSATION),
+            ),
             Err(e) => {
                 self.memory.profile_failures += 1;
                 let refused = matches!(&e,
@@ -773,7 +895,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
             ));
         };
         let profile = self.profile().await?;
-        let args = json!({
+        let mut args = json!({
             "channel": self.bridge.channel.name(),
             "tenant_id": turn.user.directory_tenant,
             "aad_object_id": aad,
@@ -781,8 +903,13 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
             "email": profile.email,
             "upn": profile.upn,
             "conversation": turn.conversation,
+            "service_url": turn.reply_to["serviceUrl"],
         });
+        if let Some(proof) = &self.memory.proof {
+            args["activity_token"] = json!(proof.expose_secret());
+        }
         let mut reloaded = false;
+        let mut waited = false;
         let minted = loop {
             let service = self.service(&credential.current()).await?;
             match service.call_raw("mint_user_token", args.clone()).await {
@@ -795,7 +922,21 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                     );
                     reloaded = true;
                 }
-                other => break other,
+                other => {
+                    if let Err(e) = &other
+                        && !waited
+                        && let Some(wait) = self.credential_cap_wait(e)
+                    {
+                        tracing::info!(
+                            wait_s = wait.as_secs(),
+                            "chat bridge: the gateway's per-credential mint cap; waiting once"
+                        );
+                        tokio::time::sleep(wait).await;
+                        waited = true;
+                        continue;
+                    }
+                    break other;
+                }
             }
         }
         .map_err(|e| match &e {
@@ -803,13 +944,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                 data_code: Some(code),
                 message,
                 ..
-            } => match Decline::from_code(code) {
-                Some(d) => BridgeError::Declined(d),
-                None if code == escurel_types::chat_channel::mint_codes::NO_PRINCIPAL => {
-                    BridgeError::NoPrincipal(message.clone())
-                }
-                None => BridgeError::Gateway(e),
-            },
+            } => classify(code, message).unwrap_or(BridgeError::Gateway(e)),
             _ => BridgeError::Gateway(e),
         })?;
         let text = |k: &str| {
@@ -824,6 +959,28 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                 "the gateway answered without a token or subject".to_owned(),
             )),
         }
+    }
+
+    /// How long to wait out a `rate_limited` refusal before one more try: only
+    /// the bridge credential's cap (a busy bridge, not one person asking too
+    /// much), only when it lifts within [`MAX_RATE_WAIT`], and only when the
+    /// answer can still be due before the deadline (crew F16).
+    fn credential_cap_wait(&self, e: &escurel_client::Error) -> Option<Duration> {
+        let escurel_client::Error::JsonRpc {
+            data_code: Some(code),
+            data: Some(data),
+            ..
+        } = e
+        else {
+            return None;
+        };
+        if code != escurel_types::chat_channel::mint_codes::RATE_LIMITED
+            || data["scope"] != "credential"
+        {
+            return None;
+        }
+        let wait = Duration::from_secs(data["retry_after_secs"].as_u64()?);
+        (wait <= MAX_RATE_WAIT && Instant::now() + wait < self.deadline).then_some(wait)
     }
 
     /// The deprecated path: sign the person's token with the bridge's own key.

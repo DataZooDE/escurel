@@ -82,6 +82,22 @@ Chat bridge: gateway-minted turns, directory groups, group chats (#830):
   conversation, an existing mapping is opened instead of duplicated); explore's Chat tab labels a conversation that
   acts as a group.
 
+Group directories (#835):
+
+- **Okta as an OAuth service app**: `ESCUREL_AUTH_OKTA_AUTH=oauth` with `ESCUREL_AUTH_OKTA_CLIENT_ID` and
+  `ESCUREL_AUTH_OKTA_PRIVATE_KEY[_FILE]` (optional `…_KEY_ID`, `…_TOKEN_URL`, default `<base>/oauth2/v1/token`)
+  reads the groups with a client-credentials token (`private_key_jwt`: a short-lived RS256 assertion, a fresh `jti`
+  each time; scopes `okta.groups.read okta.users.read`), cached until shortly before it expires, instead of an
+  admin's SSWS API token. `ssws` stays the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set; with neither the boot
+  asks for one, and a key of the other mode is refused. A key that does not parse fails the boot. Okta's "Require
+  DPoP" must be off on the app: escurel sends no DPoP proof, and a token endpoint asking for one is named in the
+  gateway's log as the setting to turn off.
+
+**Behaviour changes to note:**
+- A group directory's `…_BASE_URL` / `…_TOKEN_URL` may be plain http (to a loopback address) only with the dev flag
+  `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`; without it the gateway refuses to boot, naming the key and the flag (#835).
+  A deployment pointing a directory at a local stand-in over http without the flag must set it.
+
 **Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
 `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
 It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the
@@ -92,6 +108,33 @@ next release. Migrate with the keep/remove checklist in
 - A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
   `agent:<skill>` (as a minting runner's do) instead of as the runner.
 - An agent token without an `iat` claim is refused.
+
+Chat bridge hardening (#835):
+
+- **Added — gateway-side Teams verification** (`ESCUREL_AUTH_TEAMS_APP_ID`, `…_APP_SECRET[_FILE]`, `…_OPENID_METADATA`,
+  `…_ISSUER`, `…_TOKEN_URL`, `…_TOKEN_SCOPE`, `…_SERVICE_URL_HOSTS`): the bridge forwards each activity's Bot Framework
+  bearer to `mint_user_token` (`activity_token`, `service_url`), and the gateway verifies it, asks the connector's
+  roster whether the sender is in the conversation (1:1, group chat and channel), and uses Microsoft's object id,
+  tenant, email and UPN. New codes `activity_unverified`, `not_in_conversation` (the bridge drops both silently) and
+  `identity_mismatch` for a disagreeing bridge. The Bot Framework token check now lives once in
+  `escurel_auth::bot_framework`, shared by the bridge and the gateway.
+- **Added — mint rate limits**: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (600, per bridge credential, before any lookup)
+  and `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (30); `rate_limited` (retryable, `retry_after_secs`, `scope`).
+  The bridge waits out a per-credential cap once when it lifts within 10 s; otherwise the person is told once.
+  `escurel_client::Error::JsonRpc` carries the whole `error.data` as `data`.
+- **Security**: with Teams verification on, a stolen `escurel:bridge` credential alone no longer mints for anyone,
+  and forged identity fields (object id, tenant, email, UPN) are refused. It does NOT bind a mint to one
+  conversation: the Bot Framework signs no activity body, so a captured, unexpired activity token plus a stolen
+  bridge credential can mint for any member of any conversation the bot is in on that `serviceUrl`, until the
+  token expires. The roster check stops forging people who are in no such conversation. One credential minting
+  for more than 50 distinct askers in a minute is logged at WARN. Without verification the gateway warns once
+  at boot that it trusts the bridge for who asked.
+- The bridge drops a turn whose own member lookup answers `404` (the sender is not in the conversation) without a
+  reply.
+- With verification on, a conversation kind its Teams id contradicts (a `19:…@thread.v2` group chat called
+  `personal`, a channel turn with no team) is `identity_mismatch`. The Bot Framework keys are fetched with the
+  caller's client (the gateway's egress-vetted one), never through a redirect, and only from an https `jwks_uri`
+  (plain http only to loopback behind the dev flag).
 
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 

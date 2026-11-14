@@ -683,6 +683,7 @@ mod tests {
             message: "quota".into(),
             data_code: Some("quota_exhausted".into()),
             retryable: Some(true),
+            data: None,
         };
         assert!(matches!(
             classify_client_error(&rpc),

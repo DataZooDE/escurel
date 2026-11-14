@@ -20,18 +20,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri};
-use axum::routing::{get, post};
+use axum::http::StatusCode;
+use axum::routing::get;
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, DirectoryStandIn, EscurelProcess, ExtraIssuer, FixtureBuilder,
-    GRAPH_TENANT, Opts, Role, RunnerProcess, RunningRunner, WriteAclMode, bridge_mint, free_port,
+    AuthMode, BotFrameworkStandIn as BotFramework, ConfigOverrides, DirectoryStandIn,
+    EscurelProcess, ExtraIssuer, FixtureBuilder, GRAPH_TENANT, Opts, Role, RunnerProcess,
+    RunningRunner, WEBCHAT_KID, WriteAclMode, bridge_mint, free_port,
 };
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const APP_ID: &str = "test-bot-app";
-const BF_ISSUER: &str = "https://api.botframework.com";
 const ALICE_AAD: &str = "alice-aad-oid";
 const ALICE: &str = "user:alice-aad-oid";
 const ALICE_EMAIL: &str = "alice@acme.example";
@@ -43,10 +42,6 @@ const TEAM_ID: &str = "19:team@thread.tacv2";
 const CHANNEL_ID: &str = "19:deals@thread.tacv2";
 /// The Entra tenant: the one the Graph stand-in serves.
 const ENTRA_TENANT: &str = GRAPH_TENANT;
-/// The stand-in JWKS publishes the test key twice: endorsed for Teams, and
-/// endorsed only for another Bot Framework channel.
-const TEAMS_KID: &str = "bf-teams";
-const WEBCHAT_KID: &str = "bf-webchat";
 
 /// A `document` skill taking plain text, so an attachment has somewhere to
 /// go; each person owns the memos they upload.
@@ -61,169 +56,22 @@ const READ_DEAL: &str = "read: markdown/instances/deal/q3.md";
 
 // ---- Microsoft's side --------------------------------------------------
 
-/// What the stand-in connector saw.
-#[derive(Default)]
-struct Seen {
-    /// `(path, authorization, body)` per activity posted to the connector.
-    activities: Vec<(String, String, Value)>,
-    /// Form bodies posted to the token endpoint.
-    token_requests: Vec<String>,
-    /// Record a `message` activity, then drop the connection without an
-    /// answer: the reply was delivered, but the bridge cannot know it.
-    drop_after_recording: bool,
-    /// Answer the conversation-members API with this status instead.
-    member_status: Option<u16>,
-    /// How often the conversation-members API was asked.
-    member_calls: usize,
+/// The shared stand-in (`escurel_test_support::BotFrameworkStandIn`), with
+/// this file's people on its roster.
+async fn bot_framework() -> BotFramework {
+    let bf = BotFramework::start().await;
+    bf.add_member("29:alice", ALICE_AAD, ALICE_EMAIL, ENTRA_TENANT);
+    bf.add_member("29:bob", BOB_AAD, BOB_EMAIL, ENTRA_TENANT);
+    bf
 }
 
-struct BotFramework {
-    base: String,
-    seen: Arc<Mutex<Seen>>,
-    issuer: ExtraIssuer,
+/// The activities this file's tests send.
+trait Activities {
+    fn group_message(&self, id: &str, text: &str, who: (&str, &str)) -> Value;
+    fn message(&self, id: &str, text: &str) -> Value;
 }
 
-impl BotFramework {
-    async fn start() -> Self {
-        let issuer = ExtraIssuer::start().await;
-        let seen = Arc::new(Mutex::new(Seen::default()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let metadata = json!({ "issuer": BF_ISSUER, "jwks_uri": format!("{base}/jwks"),
-            "id_token_signing_alg_values_supported": ["RS256"] });
-        let mut teams_key = issuer.public_jwk(TEAMS_KID);
-        teams_key["endorsements"] = json!(["msteams"]);
-        let mut webchat_key = issuer.public_jwk(WEBCHAT_KID);
-        webchat_key["endorsements"] = json!(["webchat"]);
-        let jwks = json!({ "keys": [teams_key, webchat_key] });
-
-        async fn token(State(seen): State<Arc<Mutex<Seen>>>, body: String) -> axum::Json<Value> {
-            seen.lock().unwrap().token_requests.push(body);
-            axum::Json(json!({ "token_type": "Bearer", "expires_in": 3600,
-                               "access_token": "connector-token" }))
-        }
-        // The raw path: `Path` would percent-decode the conversation id.
-        async fn activity(
-            State(seen): State<Arc<Mutex<Seen>>>,
-            uri: Uri,
-            headers: HeaderMap,
-            axum::Json(body): axum::Json<Value>,
-        ) -> axum::Json<Value> {
-            let rest = uri
-                .path()
-                .strip_prefix("/v3/conversations/")
-                .unwrap_or_default()
-                .to_owned();
-            let auth = headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            let drop_it = {
-                let mut seen = seen.lock().unwrap();
-                let drop_it = seen.drop_after_recording && body["type"] == "message";
-                seen.activities.push((rest, auth, body));
-                drop_it
-            };
-            // A panic ends this connection's task: the client sees the
-            // connection close after its request was read, with no response.
-            assert!(!drop_it, "stand-in connector: dropping the connection");
-            axum::Json(json!({ "id": "sent-1" }))
-        }
-        // The conversation-members API: who a sender is, beyond the message.
-        async fn member(
-            State(seen): State<Arc<Mutex<Seen>>>,
-            uri: Uri,
-        ) -> Result<axum::Json<Value>, StatusCode> {
-            let status = {
-                let mut seen = seen.lock().unwrap();
-                seen.member_calls += 1;
-                seen.member_status
-            };
-            if let Some(status) = status {
-                return Err(StatusCode::from_u16(status).unwrap());
-            }
-            // The bridge percent-encodes the user id as one path segment.
-            let user = uri.path().rsplit('/').next().unwrap_or_default();
-            let (aad, email) = match user {
-                "29%3Aalice" => (ALICE_AAD, ALICE_EMAIL),
-                "29%3Abob" => (BOB_AAD, BOB_EMAIL),
-                _ => return Err(StatusCode::NOT_FOUND),
-            };
-            Ok(axum::Json(
-                json!({ "id": user, "aadObjectId": aad, "email": email,
-                                  "userPrincipalName": email }),
-            ))
-        }
-        async fn file() -> &'static str {
-            "Globex renews in 2028.\n"
-        }
-        let app = Router::new()
-            .route(
-                "/openid",
-                get(move || {
-                    let m = metadata.clone();
-                    async move { axum::Json(m) }
-                }),
-            )
-            .route(
-                "/jwks",
-                get(move || {
-                    let k = jwks.clone();
-                    async move { axum::Json(k) }
-                }),
-            )
-            .route("/token", post(token))
-            .route("/v3/conversations/{*rest}", post(activity).get(member))
-            .route("/files/memo.txt", get(file))
-            .with_state(Arc::clone(&seen));
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-        Self { base, seen, issuer }
-    }
-
-    /// A channel token as the Bot Framework signs it for this bot.
-    fn token(&self, audience: &str) -> String {
-        self.token_with_kid(audience, TEAMS_KID)
-    }
-
-    fn token_with_kid(&self, audience: &str, kid: &str) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.issuer.sign_with_kid(
-            &json!({
-                "iss": BF_ISSUER, "aud": audience, "serviceurl": self.base,
-                "nbf": now - 5, "iat": now - 5, "exp": now + 600,
-            }),
-            kid,
-        )
-    }
-
-    /// The `message` activities sent back (typing excluded), in order.
-    fn replies(&self) -> Vec<(String, String, Value)> {
-        self.seen
-            .lock()
-            .unwrap()
-            .activities
-            .iter()
-            .filter(|(_, _, b)| b["type"] == "message")
-            .cloned()
-            .collect()
-    }
-
-    fn activity_types(&self) -> Vec<String> {
-        self.seen
-            .lock()
-            .unwrap()
-            .activities
-            .iter()
-            .map(|(_, _, b)| b["type"].as_str().unwrap_or_default().to_owned())
-            .collect()
-    }
-
+impl Activities for BotFramework {
     /// `who` @mentions the bot in the group chat [`GROUP_CHAT_ID`].
     fn group_message(&self, id: &str, text: &str, who: (&str, &str)) -> Value {
         let mut m = self.message(id, &format!("<at>escurel</at> {text}"));
@@ -258,7 +106,7 @@ const BRIDGE_KID: &str = "escurel-chat-bridge";
 /// How the gateway learns who may do what.
 enum Trust<'a> {
     /// The gateway mints every turn (`mint_user_token`) with groups from these directories.
-    Minted(escurel_test_support::BridgeMintConfig),
+    Minted(Box<escurel_test_support::BridgeMintConfig>),
     /// DEPRECATED: the gateway trusts the bridge's own key at this JWKS.
     SelfSigned(&'a ExtraIssuer, String),
 }
@@ -284,7 +132,7 @@ async fn gateway(trust: Trust<'_>) -> EscurelProcess {
     match trust {
         Trust::Minted(mint) => {
             overrides.signing = true;
-            overrides.bridge_mint = Some(mint);
+            overrides.bridge_mint = Some(*mint);
         }
         Trust::SelfSigned(key, jwks) => {
             overrides.extra_issuers = vec![(key.issuer_url().to_owned(), jwks)];
@@ -495,6 +343,10 @@ struct Setup {
     /// The bridge reads its credential from this file
     /// (`ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE`), with this content at boot.
     token_file: Option<String>,
+    /// The gateway verifies each Teams asker itself (`ESCUREL_AUTH_TEAMS_*`, #835).
+    verify: bool,
+    /// The gateway's mint caps; `None` = production.
+    mint_rate: Option<escurel_test_support::MintRateLimits>,
 }
 
 async fn world(run_ms: u64) -> World {
@@ -519,6 +371,7 @@ async fn world_with(setup: Setup) -> World {
     dirs.graph.member_of(BOB_AAD, &["escurel-support"]);
     dirs.graph.known_as(ALICE_AAD, ALICE_EMAIL, &[]);
     dirs.graph.known_as(BOB_AAD, BOB_EMAIL, &[]);
+    let bf = bot_framework().await;
     let gw = if setup.self_signed {
         gateway(Trust::SelfSigned(
             &bridge_key,
@@ -540,14 +393,15 @@ async fn world_with(setup: Setup) -> World {
                 _ => dirs.okta.config("escurel-"),
             })
             .collect();
-        gateway(Trust::Minted(bridge_mint(
-            "user:{aadObjectId}",
-            configs,
-            setup.cache,
-        )))
-        .await
+        let mut mint = bridge_mint("user:{aadObjectId}", configs, setup.cache);
+        if setup.verify {
+            mint.teams = Some(bf.gateway_verification(APP_ID));
+        }
+        if let Some(rate) = setup.mint_rate {
+            mint.rate = rate;
+        }
+        gateway(Trust::Minted(Box::new(mint))).await
     };
-    let bf = BotFramework::start().await;
     let runner = setup.run_ms.map(|ms| runner(&gw, ms));
     let link = Link::start(gw.base_url()).await;
     let auth_env = if setup.self_signed {
@@ -1751,4 +1605,267 @@ async fn a_rotated_bridge_credential_file_is_picked_up_without_a_restart() {
     .unwrap();
     let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
     assert_eq!(replies[0].2["text"], "echo: rotated?");
+}
+
+// ---- #835: the gateway verifies the Teams asker itself -------------------
+
+/// With `ESCUREL_AUTH_TEAMS_*` the bridge forwards the activity's bearer and
+/// the gateway asks the roster itself: a member of a mapped group chat is
+/// answered as its group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_mapped_group_chat_answers_a_member() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    map_chat(
+        &w.gw,
+        "sales-chat",
+        &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+        "sales",
+    )
+    .await;
+    let token = w.bf.token(APP_ID);
+    let asked =
+        w.bf.group_message("act-v1", READ_DEAL, ("29:alice", ALICE_AAD));
+    assert_eq!(w.bridge.post(Some(&token), &asked).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], read_reply("group:sales", "ok"));
+    assert!(
+        w.bf.seen.lock().unwrap().member_calls >= 2,
+        "the bridge and the gateway each asked the roster"
+    );
+    let events = chat_events(&w.gw).await;
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["provenance"]["asked_by"], ALICE);
+}
+
+/// Someone the conversation's roster does not hold — whatever object id the
+/// activity claims — is dropped by the BRIDGE's own members lookup (a 404),
+/// before any mint: no run and no reply, there is no person to tell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sender_the_roster_lacks_is_dropped_by_the_bridges_own_lookup() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    map_chat(
+        &w.gw,
+        "sales-chat",
+        &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+        "sales",
+    )
+    .await;
+    let token = w.bf.token(APP_ID);
+    // Claims to be Alice, but Teams has no `29:mallory` in this chat.
+    let forged =
+        w.bf.group_message("act-f1", READ_DEAL, ("29:mallory", ALICE_AAD));
+    assert_eq!(w.bridge.post(Some(&token), &forged).await, StatusCode::OK);
+    // Alice, removed from the chat since: the same.
+    w.bf.remove_from(GROUP_CHAT_ID, "29:alice");
+    let removed =
+        w.bf.group_message("act-f2", READ_DEAL, ("29:alice", ALICE_AAD));
+    w.bridge.post(Some(&token), &removed).await;
+    w.a_later_turn_is_answered("act-f9", 0).await;
+    assert_eq!(
+        chat_events(&w.gw).await.len(),
+        1,
+        "only the later 1:1 turn ran"
+    );
+}
+
+/// Past the per-asker cap the person is told once to wait a minute; another
+/// asker is still answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_rate_limited_asker_is_told_once() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        mint_rate: Some(escurel_test_support::MintRateLimits {
+            per_credential_per_minute: 600,
+            per_asker_per_minute: 1,
+        }),
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-r1", "first"))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], "echo: first");
+    let second = w.bf.message("act-r2", "second");
+    w.bridge.post(Some(&token), &second).await;
+    // The channel redelivers: still one notice.
+    w.bridge.post(Some(&token), &second).await;
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[1].2["text"],
+        "I'm getting a lot of questions right now, please try again in a minute."
+    );
+    let mut bob = w.bf.message("act-r3", "from bob");
+    bob["from"] = json!({ "id": "29:bob", "name": "Bob", "aadObjectId": BOB_AAD });
+    w.bridge.post(Some(&token), &bob).await;
+    let replies = wait_for_replies(&w.bf, 3, Duration::from_secs(60)).await;
+    assert_eq!(replies.len(), 3, "exactly one notice: {replies:#?}");
+    assert_eq!(replies[2].2["text"], "echo: from bob");
+}
+
+/// Crew F1: when the gateway cannot fetch Microsoft's signing keys the turn
+/// is not dropped: the person hears that their access cannot be checked, and
+/// the next question is answered once the keys are back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_signing_key_outage_tells_the_person() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    // Fetch 0 is the bridge's own inbound check; fetch 1 is the gateway's.
+    w.bf.seen.lock().unwrap().jwks_fail = 1..2;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-k1", "hello"))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I can't check your access right now. Please try again in a few minutes."
+    );
+    w.a_later_turn_is_answered("act-k9", 1).await;
+}
+
+/// Crew F2: a turn the bridge resumes after a restart has lost its activity
+/// proof (never stored), so a verifying gateway mints nothing for it: the
+/// person is asked, once, to ask again — not left in silence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_restart_mid_turn_asks_the_person_to_ask_again() {
+    let mut w = world_with(Setup {
+        run_ms: Some(20_000),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let activity = w.bf.message("act-x1", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while chat_events(&w.gw).await.is_empty() {
+        assert!(Instant::now() < deadline, "the turn was never captured");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    w.bridge.restart();
+    w.bridge.wait_healthy().await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I lost your question in a restart — please ask again."
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(w.bf.replies().len(), 1, "one notice");
+}
+
+/// Crew F3: the turn's re-mint forwards the same activity token; once it has
+/// expired the gateway refuses it, and the person is asked to ask again at
+/// once instead of waiting for the reply timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_an_expired_activity_token_mid_turn_asks_again() {
+    let w = world_with(Setup {
+        run_ms: Some(60_000),
+        verify: true,
+        // Re-mint every second.
+        bridge_env: vec![("ESCUREL_BRIDGE_TOKEN_TTL", "2s")],
+        ..Setup::default()
+    })
+    .await;
+    // Valid for about six more seconds (the verifiers allow 300 s of skew).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = w.bf.sign(
+        &json!({ "iss": escurel_test_support::BF_ISSUER, "aud": APP_ID,
+                 "serviceurl": w.bf.base, "nbf": now - 400, "iat": now - 400,
+                 "exp": now - 294 }),
+        escurel_test_support::TEAMS_KID,
+    );
+    let activity = w.bf.message("act-e1", "a long question");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(40)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I lost track of your question before I could finish it — please ask again."
+    );
+    assert_eq!(chat_events(&w.gw).await.len(), 1, "it had been captured");
+}
+
+/// Crew F16: the per-CREDENTIAL cap (a busy bridge) is waited out once when it
+/// lifts within seconds, so nobody in the burst is turned away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_per_credential_cap_is_waited_out_not_declined() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        // Six in a burst, then one every ten seconds.
+        mint_rate: Some(escurel_test_support::MintRateLimits {
+            per_credential_per_minute: 6,
+            per_asker_per_minute: 600,
+        }),
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    for i in 0..7 {
+        w.bridge
+            .post(
+                Some(&token),
+                &w.bf.message(&format!("act-c{i}"), &format!("q{i}")),
+            )
+            .await;
+    }
+    let replies = wait_for_replies(&w.bf, 7, Duration::from_secs(60)).await;
+    let mut texts: Vec<String> = replies
+        .iter()
+        .map(|r| r.2["text"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    texts.sort();
+    let want: Vec<String> = (0..7).map(|i| format!("echo: q{i}")).collect();
+    assert_eq!(texts, want, "every turn answered, none declined");
+}
+
+/// Crew F8: the bridge's own lookup succeeds (Teams knows `29:alice`), but
+/// the activity claims Bob's object id; the GATEWAY asks the roster itself,
+/// refuses `identity_mismatch`, and no run starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_forged_object_id_is_refused_by_the_gateway() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let mut forged = w.bf.message("act-m1", "who renews?");
+    forged["from"] = json!({ "id": "29:alice", "name": "Alice", "aadObjectId": BOB_AAD });
+    w.bridge.post(Some(&token), &forged).await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert!(
+        replies[0].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("isn't set up correctly"),
+        "{:?}",
+        replies[0].2
+    );
+    assert_eq!(
+        w.bf.seen.lock().unwrap().member_calls,
+        2,
+        "the bridge's lookup, then the gateway's own"
+    );
+    assert!(chat_events(&w.gw).await.is_empty(), "no run");
 }
