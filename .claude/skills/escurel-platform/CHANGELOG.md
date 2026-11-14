@@ -4,6 +4,24 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.28.0 — runner role, gateway-minted run tokens, external agent tokens, runner gaps
+
+- **`escurel:runner` service role:** a runner no longer needs `escurel:admin`. The role reads every event (to admit
+  it), claims, reports status, writes only its OWN `runtime` page and calls `mint_run_token`; a run token never
+  inherits it (references/08, 09, 11).
+- **`mint_run_token`:** a runner with a static/file credential and no signing key gets each run's token from the
+  gateway — only for a run it filed `run-started` for, and an agent token only for a skill the agent lists
+  (`run_unknown`, `run_not_yours`, `skill_unknown`, `agent_scope_denied`) (references/02, 08).
+- **Concurrent admission:** `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8) (references/09).
+- **External agent tokens:** `issue_agent_token` / `escurel agent token issue <agent>` (admin) for Claude Code, Codex,
+  Multica; `revoke_agent_tokens` / `escurel agent token revoke <agent>` moves the agent page's `token_epoch` strictly
+  forward on the gateway clock, and every older token (in-flight run tokens of that agent included) gets
+  `agent_token_revoked` (references/01, 02, 04, 08, 12).
+- **Runner gaps (#827):** `list_runtimes` `harnesses[].supports_inject`; codex shell commands are `command` transcript
+  records; per-tenant `transcript_retention_days` (`--clear-transcript-retention`); a signed
+  `POST /hooks/schedule/<skill>` webhook (`schedule_webhook: true`, timestamped signature, shared `schedule_budget`)
+  (references/01, 02, 04, 11).
+
 ## 0.27.0 — distributed runtimes, SKILL.md interop, Teams bridge
 
 - **Runtimes:** every runner registers an admin-only `runtime` page (harnesses + CLI versions, labels from
