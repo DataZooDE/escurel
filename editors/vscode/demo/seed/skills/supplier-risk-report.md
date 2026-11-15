@@ -15,17 +15,17 @@ instances:
   a: "[[supplier-risk-analysis::{analysis}]]"
 views:
   - { kind: frontmatter, instance: a, keys: [supplier, risk_level, risk_score, orders_affected, net_value_at_risk], label: Analysis }
-  - { kind: vega, data: orders, spec: value_per_order }
+  - { kind: anofox, data: orders, spec: value_per_order }
   - { kind: table, data: orders }
   - { kind: markdown, instance: a }
 specs:
+  # An anofox role spec (peacock#44): each role reads one column of the
+  # `orders` rows. The same figures are in the analysis text and its table.
   value_per_order:
     title: Net value at risk per order
-    description: "Bar chart of the net value each affected order carries. The same figures, with the takeaway in words, are in the analysis text and its table."
-    mark: bar
-    encoding:
-      x: { field: order, type: nominal, title: Order }
-      y: { field: net_value, type: quantitative, title: Net value at risk }
+    roles:
+      - [order, XAXIS, Order]
+      - [net_value, BARCHART, Net value at risk]
 ---
 
 Peacock report behind the `viewer:` of `supplier-risk-analysis`. The bar chart reads the rows of the
