@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import {
   groupProblem,
   mappingPage,
@@ -18,12 +19,23 @@ describe('Map Teams conversation', () => {
     expect(page.content).toContain('skill: chat-channel\n');
     expect(page.content).toContain('channel: msteams\n');
     expect(page.content).toContain('conversation_id: "19:abc@thread.v2"\n');
-    expect(page.content).toContain('group: sales\n');
+    expect(page.content).toContain('group: "sales"\n');
     expect(page.content).not.toContain('team_id');
     // One conversation, one page.
     expect(
       mappingPage({ kind: 'group', conversationId: '19:abc@thread.v2', group: 'sales' }).pageId,
     ).toBe(page.pageId);
+  });
+
+  // Codex review 2026-11-15: a valid group YAML would read as a number, a boolean, null or an
+  // alias is written as a string, which is what the gateway's mapping parser requires.
+  it('writes every valid group name as a YAML string', () => {
+    for (const group of ['123', 'true', 'null', 'yes', '1e3', '@team', 'sales']) {
+      expect(groupProblem(group), group).toBeUndefined();
+      const page = mappingPage({ kind: 'group', conversationId: '19:abc@thread.v2', group });
+      const front = parse(page.content.split('---\n')[1] ?? '') as Record<string, unknown>;
+      expect(front.group, group).toBe(group);
+    }
   });
 
   it('writes a channel mapping by team and channel', () => {
@@ -65,7 +77,7 @@ describe('Map Teams conversation', () => {
     });
     const ops = mappingPage({ kind: 'group', conversationId: '19:abc@thread.v2', group: 'ops' });
     expect(ops.pageId).toBe(sales.pageId);
-    expect(ops.content).toContain('group: ops\n');
+    expect(ops.content).toContain('group: "ops"\n');
     const channel = mappingPage({ kind: 'channel', teamId: 't', channelId: 'c', group: 'sales' });
     expect(channel.pageId).not.toBe(sales.pageId);
 

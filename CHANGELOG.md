@@ -8,6 +8,15 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Fixed (codex review of v2026.11.14):
+
+- An agent whose `scopes.tools` leave out `assign_event` again has its event filed after its write lands. Since
+  v2026.11.14 the runner filed the event on the run's own token, so the agent's tool scope refused it with
+  `agent_scope_denied`; the event stayed unprocessed and was retried for a write that had already landed. The
+  runner files it on its own credential again; the instance is still read back with the run's token.
+- VS Code "Map Teams conversation…" writes the group as a YAML string, so a valid group named like a number,
+  a boolean or `null` (`123`, `true`) is no longer a mapping the gateway refuses.
+
 ## v2026.11.14
 
 Runners outside the cluster without admin, revocable tokens for external agents, and a Teams bridge that holds no

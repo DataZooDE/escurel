@@ -38,6 +38,13 @@ const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: ec
     skills: [\"[[skill::customer]]\", \"[[skill::note]]\"]\n\
     scopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# scribe\n";
 
+/// A clerk: may write, but its `scopes.tools` leave out `assign_event` (codex review, 2026-11-15).
+/// Filing the event is the runner's bookkeeping, not the agent's tool call.
+const LEDGER: &str = "---\nkind: skill\nid: ledger\nautonomy: auto\nagent: \"[[agent::clerk]]\"\n\
+    acl:\n  create: [ops]\n  update: [ops]\n---\n# ledger\n\nFold the event into the instance.\n";
+const CLERK: &str = "---\nkind: instance\nskill: agent\nid: clerk\nharness: echo\n\
+    skills: [\"[[skill::ledger]]\"]\nscopes:\n  tools: [list_inbox, expand, whoami, update_page]\n---\n# clerk\n";
+
 fn instance_body(skill: &str) -> String {
     format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
 }
@@ -77,6 +84,9 @@ async fn gateway_signing(signing: bool) -> EscurelProcess {
                 .skill("payroll", PAYROLL)
                 .skill("plain", PLAIN)
                 .skill("secret", SECRET)
+                .skill("ledger", LEDGER)
+                .instance("ledger", "c1", instance_body("ledger").as_str())
+                .instance("agent", "clerk", CLERK)
                 .instance("secret", "c1", instance_body("secret").as_str())
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
@@ -705,4 +715,49 @@ async fn a_run_is_confirmed_with_its_own_token_under_a_read_acl() {
         "{page}"
     );
     assert_eq!(page["page"]["last_written_by"], "agent:secret", "{page}");
+}
+
+/// An agent whose `scopes.tools` leave out `assign_event` still has its event filed once its write
+/// lands: the runner files it on its own credential as bookkeeping (codex review 2026-11-15; #833
+/// had moved the filing onto the run's token, so the agent's tool scope refused it and the event
+/// was retried for a write that had already landed).
+#[tokio::test]
+async fn an_agent_without_assign_event_in_scope_still_has_its_event_filed() {
+    let gw = gateway().await;
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(runner_token(&gw, "runner:clerk"))
+        .env("ESCUREL_RUNNER_ID", "clerk")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
+        // The harness writes the page and skips filing the event, as a forgetful LLM does.
+        .env("ESCUREL_ECHO_SKIP_ASSIGN", "1")
+        .spawn();
+    runner.wait_healthy().await;
+
+    let event_id = capture(&gw, "ledger").await;
+    let done = runner
+        .wait_for_status(
+            &event_id,
+            &["processed", "failed", "dead_letter"],
+            Duration::from_secs(60),
+        )
+        .await;
+    assert_eq!(done["status"], "processed", "{done}");
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("ledger") }),
+    )
+    .await;
+    assert_eq!(page["page"]["last_written_by"], "agent:clerk", "{page}");
+    let found = call(
+        &gw,
+        &admin(&gw),
+        "list_events",
+        json!({ "event_id": event_id }),
+    )
+    .await;
+    let event = &found["events"][0];
+    assert_eq!(event["instance_page_id"], page_id("ledger"), "{found}");
+    assert_eq!(event["status"], "processed", "{found}");
 }

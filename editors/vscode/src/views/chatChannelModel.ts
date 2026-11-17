@@ -77,7 +77,7 @@ export function mappingPage(input: MappingInput): { pageId: string; content: str
     (input.kind === 'group' ? `Teams group chat → ${group}` : `Teams channel → ${group}`);
   const content =
     `---\nkind: instance\nskill: ${CHAT_CHANNEL_SKILL}\nid: ${id}\ntitle: ${JSON.stringify(title)}\n` +
-    `channel: msteams\n${target}\ngroup: ${group}\n---\n# ${title}\n\n` +
+    `channel: msteams\n${target}\ngroup: ${JSON.stringify(group)}\n---\n# ${title}\n\n` +
     `A member's @mention of the bot here acts as \`group:${group}\`, with ${group}'s access only — ` +
     `and everyone in the conversation, guests included, sees those answers.\n`;
   return { pageId: `markdown/instances/${CHAT_CHANNEL_SKILL}/${id}.md`, content };

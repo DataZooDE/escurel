@@ -981,12 +981,17 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .unwrap_or_default()
         .to_owned();
 
-    // 4. Mark the event processed + bound to the instance.
-    mcp.call(
-        "assign_event",
-        json!({ "event_id": event_id, "instance_page_id": instance_page_id }),
-    )?;
-    tool_calls += 1;
+    // 4. Mark the event processed + bound to the instance. Test-only knob
+    //    `ESCUREL_ECHO_SKIP_ASSIGN=1`: leave it out, as an LLM harness that
+    //    "forgets" the completion step does, so the runner's own filing
+    //    (`assign_confirmed_write`) is what lands it.
+    if std::env::var("ESCUREL_ECHO_SKIP_ASSIGN").as_deref() != Ok("1") {
+        mcp.call(
+            "assign_event",
+            json!({ "event_id": event_id, "instance_page_id": instance_page_id }),
+        )?;
+        tool_calls += 1;
+    }
 
     Ok(HarnessOutcome {
         reply: None,

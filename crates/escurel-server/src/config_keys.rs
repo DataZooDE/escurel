@@ -1914,6 +1914,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "echo harness: idle this long before finishing, so a test can cancel a run",
     },
     ConfigKey {
+        name: "ESCUREL_ECHO_SKIP_ASSIGN",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: `1` skips its own `assign_event`, as a forgetful LLM does, so the runner's filing lands the event (tests)",
+    },
+    ConfigKey {
         name: "ESCUREL_ECHO_SLEEP_SKILL",
         component: "TestOnly",
         default: "—",
