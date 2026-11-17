@@ -8,7 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
-Fixed (codex review of v2026.11.14):
+## v2026.11.17
+
+A patch release with two fixes from the codex review of v2026.11.14. No upgrade steps.
+
+Fixed:
 
 - An agent whose `scopes.tools` leave out `assign_event` again has its event filed after its write lands. Since
   v2026.11.14 the runner filed the event on the run's own token, so the agent's tool scope refused it with
@@ -16,6 +20,10 @@ Fixed (codex review of v2026.11.14):
   runner files it on its own credential again; the instance is still read back with the run's token.
 - VS Code "Map Teams conversation…" writes the group as a YAML string, so a valid group named like a number,
   a boolean or `null` (`123`, `true`) is no longer a mapping the gateway refuses.
+
+Also: the S2D demo's supplier-risk report renders its chart from an anofox role spec through peacock (#838,
+demo only), the pre-push hook runs the Rust gate only when a push touches Rust (#837), and a runner test waits
+for the ledger's real `dead_letter` status (#840).
 
 ## v2026.11.14
 
