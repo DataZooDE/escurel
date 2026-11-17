@@ -242,10 +242,11 @@ pub async fn instance_version(
 ///
 /// Returns whether it assigned.
 ///
-/// `reader` reads the instance and makes the assignment: the run's own client
-/// (its token wrote the page, so it may read and assign to it; a runner
-/// credential may hold none of the skill's groups). `client`, the runner's,
-/// reads the event.
+/// `reader`, the run's own client, reads the instance back (its token wrote the
+/// page; a runner credential may hold none of the skill's groups). `client`,
+/// the runner's, reads the event and files it: filing is the runner's
+/// bookkeeping (it claimed the event), so an agent whose `scopes.tools` leave
+/// out `assign_event` must not block it (codex review 2026-11-15).
 pub async fn assign_confirmed_write(
     client: &Client,
     reader: &Client,
@@ -278,7 +279,7 @@ pub async fn assign_confirmed_write(
         return Ok(false);
     }
 
-    reader
+    client
         .assign_event(AssignEventRequest {
             event_id: trigger.event_id.clone(),
             instance_page_id: page_id.clone(),

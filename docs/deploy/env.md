@@ -405,6 +405,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
 | `ESCUREL_ECHO_VERSION_FILE` | — | echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
+| `ESCUREL_ECHO_SKIP_ASSIGN` | — | echo harness: `1` skips its own `assign_event`, as a forgetful LLM does, so the runner's filing lands the event (tests) |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_SLEEP_ONCE` | — | echo harness: a marker path; only the attempt that creates it idles for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
