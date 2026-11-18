@@ -8,6 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.18
+
+A runner-only patch release (#844), found when heron-escurel moved to v2026.11.17. No upgrade steps; only the runner
+image changes behaviour, so a deployment can re-pin its runners and leave the gateway on v2026.11.17.
+
 Fixed:
 - **The runner no longer turns a `page_write` notification into a run.** With `ESCUREL_WEBHOOK_URL` pointed at the
   runner's `/trigger`, the gateway also posts a `page_write` notification after each instance write. It names no
