@@ -184,7 +184,15 @@ pub struct RunningRunner {
 
 impl RunningRunner {
     fn start(&mut self) {
-        self.listen = format!("127.0.0.1:{}", free_port());
+        // An explicit `ESCUREL_RUNNER_LISTEN` (set with `.env`) wins: a test
+        // that points a gateway's webhook at the runner must know the port
+        // before the gateway, and so before the runner, starts.
+        self.listen = self
+            .env
+            .iter()
+            .find(|(k, _)| k == "ESCUREL_RUNNER_LISTEN")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| format!("127.0.0.1:{}", free_port()));
         let mut cmd = Command::new(&self.bin);
         // An inherited bearer would silently switch a minted runner to static.
         cmd.env_remove("ESCUREL_RUNNER_TOKEN")
