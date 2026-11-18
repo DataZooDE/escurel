@@ -55,6 +55,7 @@ mod muse_live;
 mod openai_compat;
 mod out_of_cluster_runner;
 mod packager;
+mod page_write_webhook;
 mod per_run_actor_identity;
 mod plan_mode;
 mod promotion_cascades;

@@ -8,6 +8,13 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Fixed:
+- **The runner no longer turns a `page_write` notification into a run.** With `ESCUREL_WEBHOOK_URL` pointed at the
+  runner's `/trigger`, the gateway also posts a `page_write` notification after each instance write. It names no
+  event, but the runner parsed it as one and dispatched a run for the written page's skill that it could neither
+  claim nor deduplicate. On heron-escurel the runner's own `runtime` page write dead-lettered a run for a skill
+  `runtime` that does not exist. `/trigger` now acknowledges a body without an `event_id` (202) and takes nothing.
+
 ## v2026.11.17
 
 A patch release with two fixes from the codex review of v2026.11.14. No upgrade steps.

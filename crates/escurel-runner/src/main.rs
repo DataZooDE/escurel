@@ -770,6 +770,23 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
     };
 
+    // 4. A body without an `event_id` is not an event. The gateway's webhook
+    //    also carries `page_write` notifications (`emit_page_event`:
+    //    "notification, not work"), which name no event; parsed leniently
+    //    they would become a run for the written page's skill that can be
+    //    neither claimed nor deduplicated (heron-escurel, 2026-11-18: the
+    //    runner's own `runtime` page write dead-lettered a run). Acknowledge
+    //    it so the gateway never retries, and take nothing.
+    if event.event_id.trim().is_empty() {
+        tracing::debug!(
+            target: "escurel_runner",
+            kind = %event.kind,
+            label_skill = %event.label_skill,
+            "POST /trigger: a notification without an event_id (page_write); not work, ignored"
+        );
+        return StatusCode::ACCEPTED;
+    }
+
     let trigger = match state.lineage_trust_subject.as_deref() {
         Some(subj) => Trigger::from_event_gated(&event, tenant, subj),
         None => Trigger::from_event(&event, tenant),
