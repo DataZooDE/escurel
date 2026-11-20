@@ -6,7 +6,11 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased — BREAKING (system skills are namespaced: `escurel-agent`, `escurel-runtime`, `escurel-chat-channel`)
+## Unreleased
+
+## v2026.11.21 — BREAKING (system skills are namespaced: `escurel-agent`, `escurel-runtime`, `escurel-chat-channel`)
+
+#850.
 
 The system skills escurel ships were `agent`, `runtime` and `chat-channel`. Those are names tenants use for
 their own skills, and the admin-only rule followed the name: a portfolio's own `agent` skill and everything under
