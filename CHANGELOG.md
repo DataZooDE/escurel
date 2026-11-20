@@ -8,6 +8,14 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Fixed:
+- **An unfiltered `search` no longer takes the tenant's connection once per skill.** The rows lane and the
+  "not searched: REST/MCP-backed skills" hint re-read every skill page (`rows_source` / `remote_rows::source`) under
+  the connection lock, and the SQL lane took it three times per `sql_view` instance. Behind a busy neighbour (in the
+  lab the async runner's `list_events` holds it ~1.4 s per call) each acquisition queued, so a search over 56 skills
+  did not return in minutes while a single-skill one took ~7 s. The lanes now decide from one `list_skills` read
+  and count every `sql_view` match under one lock. No behaviour change.
+
 ## v2026.11.21 — BREAKING (system skills are namespaced: `escurel-agent`, `escurel-runtime`, `escurel-chat-channel`)
 
 #850.

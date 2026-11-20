@@ -37,15 +37,23 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS sql_view_search_text (\
 /// skill is not a `sql_view` skill or declares none). Search and capture both
 /// derive the columns here, so their signatures agree.
 pub(crate) async fn search_columns(indexer: &Indexer, skill: &str) -> Vec<String> {
-    let Ok(binding) = indexer.skill_backend(skill).await else {
-        return Vec::new();
-    };
+    indexer
+        .skill_backend(skill)
+        .await
+        .map(|b| columns_of(&b))
+        .unwrap_or_default()
+}
+
+/// [`search_columns`] from a binding already in hand (a `list_skills` row).
+pub(crate) fn columns_of(binding: &super::BackendBinding) -> Vec<String> {
     binding
         .sql_view
+        .as_ref()
         .map(|sv| {
             sv.search_text
-                .into_iter()
+                .iter()
                 .filter(|c| is_valid_identifier(c))
+                .cloned()
                 .collect()
         })
         .unwrap_or_default()
@@ -129,4 +137,103 @@ pub(crate) fn match_count(conn: &Connection, view: &str, sig: &str, pattern: &st
         |r| r.get(0),
     )
     .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use escurel_embed::{Embedder, ZeroEmbedder};
+    use escurel_storage::{FsStore, LaneStore};
+
+    use crate::backend::{SqlConnector, SqlViewBackend, SqlViewBinding};
+    use crate::{Indexer, Migrator};
+
+    const SKILLS: usize = 120;
+    const HOLD: Duration = Duration::from_millis(25);
+
+    /// In the lab the async runner keeps the tenant's one connection busy
+    /// (`list_events` holds it ~1.4 s per call, several times a minute). A lane
+    /// that takes the connection once per skill queues behind that neighbour
+    /// once per skill, so an unfiltered search over 56 skills waited for minutes
+    /// while a single-skill one took seconds. Model the neighbour — hold the lock
+    /// for `HOLD`, release, repeat — and require the lanes to take it a bounded
+    /// number of times, independent of the number of skills: per-skill locking
+    /// needs ≥ `SKILLS` waits (≥ 3 s here).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_search_lanes_take_the_connection_a_bounded_number_of_times() {
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let db_dir = tempfile::TempDir::new().unwrap();
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+        let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+        let conn = duckdb::Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+        Migrator::up(&conn).unwrap();
+        let idx = Arc::new(Indexer::new(store, embedder, conn, "acme").unwrap());
+
+        for i in 0..SKILLS {
+            idx.update_page(
+                &format!("markdown/skills/s{i}.md"),
+                &format!("---\nkind: skill\nid: s{i}\ndescription: x\n---\n# s{i}\n"),
+            )
+            .await
+            .unwrap();
+        }
+        idx.update_page(
+            "markdown/skills/customers.md",
+            "---\nkind: skill\nid: customers\ndescription: x\nbackend:\n  kind: sql_view\n  \
+             source: { connector: json_dir, relation: /unused }\n  search_text: [title]\n---\n# c\n",
+        )
+        .await
+        .unwrap();
+        std::fs::write(data_dir.path().join("a.json"), br#"{"title":"widget"}"#).unwrap();
+        let binding = SqlViewBinding {
+            connector: SqlConnector::JsonDir,
+            attach: None,
+            relation: data_dir.path().to_str().unwrap().to_owned(),
+            filter: None,
+            project: Default::default(),
+            search_text: vec!["title".to_owned()],
+        };
+        let m = SqlViewBackend::new(Arc::clone(&idx))
+            .create_instance("customers", &binding, "eu", "# eu")
+            .await
+            .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let neighbour = {
+            let (idx, stop) = (Arc::clone(&idx), Arc::clone(&stop));
+            tokio::spawn(async move {
+                while !stop.load(Ordering::SeqCst) {
+                    let guard = idx.conn.lock().await;
+                    std::thread::sleep(HOLD);
+                    drop(guard);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        tokio::time::sleep(HOLD).await;
+
+        let t = Instant::now();
+        let sql = idx
+            .sql_view_search_candidates("widget", None)
+            .await
+            .unwrap();
+        let rows = idx.rows_search_candidates("widget", None).await.unwrap();
+        let elapsed = t.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        neighbour.await.unwrap();
+
+        assert_eq!(
+            sql.iter().map(|h| h.page_id.as_str()).collect::<Vec<_>>(),
+            [m.page_id.as_str()]
+        );
+        assert!(rows.is_empty());
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "lanes took {elapsed:?} behind a busy connection ({SKILLS} skills, {HOLD:?} holds)"
+        );
+    }
 }
