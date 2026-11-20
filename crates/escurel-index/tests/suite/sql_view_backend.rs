@@ -292,3 +292,96 @@ async fn sql_view_search_candidates_match_view_content_only() {
         "non-matching query must yield no SQL candidates"
     );
 }
+
+/// Seed the `customers` skill and one json_dir instance over `rows` (one file per row).
+async fn customers_instance(h: &Harness, rows: &[&str]) -> String {
+    let dir = h.data_dir.path();
+    for (i, title) in rows.iter().enumerate() {
+        std::fs::write(
+            dir.join(format!("r{i}.json")),
+            format!(r#"{{"name":"n{i}","title":"{title}"}}"#),
+        )
+        .unwrap();
+    }
+    h.indexer
+        .update_page("markdown/skills/customers.md", CUSTOMERS_SKILL_TITLE)
+        .await
+        .unwrap();
+    let mut binding = dir_binding(SqlConnector::JsonDir, dir.to_str().unwrap());
+    binding.search_text = vec!["title".to_owned()];
+    SqlViewBackend::new(Arc::clone(&h.indexer))
+        .create_instance("customers", &binding, "eu", "# eu")
+        .await
+        .unwrap()
+        .page_id
+}
+
+/// Replace every source row of the harness's json_dir with `rows`.
+fn rewrite_source(h: &Harness, rows: &[&str]) {
+    let dir = h.data_dir.path();
+    for e in std::fs::read_dir(dir).unwrap() {
+        std::fs::remove_file(e.unwrap().path()).unwrap();
+    }
+    for (i, title) in rows.iter().enumerate() {
+        std::fs::write(
+            dir.join(format!("s{i}.json")),
+            format!(r#"{{"name":"m{i}","title":"{title}"}}"#),
+        )
+        .unwrap();
+    }
+}
+
+async fn sql_score(h: &Harness, q: &str, page_id: &str) -> Option<f64> {
+    h.indexer
+        .sql_view_search_candidates(q, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hit| hit.page_id == page_id)
+        .map(|hit| hit.score)
+}
+
+#[tokio::test]
+async fn sql_view_search_reads_a_local_projection_not_the_source() {
+    // The SQL lane used to run `SELECT count(*) … ILIKE` against every instance's
+    // view on every search: a full read of the external source per view (parquet on
+    // object storage in production), serialised behind the tenant's one connection.
+    // It must read a projection captured when the view was materialised. Proof: take
+    // the source away entirely — the search still finds the instance, with its count.
+    let h = fresh_harness();
+    let page_id = customers_instance(&h, &["widget alpha", "widget beta", "gadget"]).await;
+    rewrite_source(&h, &[]);
+
+    assert_eq!(
+        sql_score(&h, "widget", &page_id).await,
+        Some(2.0),
+        "two rows matched when the projection was captured"
+    );
+    assert_eq!(sql_score(&h, "WIDGET", &page_id).await, Some(2.0), "ILIKE");
+    assert_eq!(sql_score(&h, "zzz-no-match", &page_id).await, None);
+}
+
+#[tokio::test]
+async fn refreshing_search_projections_follows_the_source() {
+    let h = fresh_harness();
+    let page_id = customers_instance(&h, &["widget alpha"]).await;
+    rewrite_source(&h, &["gadget beta", "gadget gamma"]);
+
+    // A projection is a snapshot: the source change is not visible until a refresh.
+    assert_eq!(sql_score(&h, "gadget", &page_id).await, None);
+
+    h.indexer.refresh_search_projections().await.unwrap();
+    assert_eq!(sql_score(&h, "gadget", &page_id).await, Some(2.0));
+    assert_eq!(sql_score(&h, "widget", &page_id).await, None);
+}
+
+#[tokio::test]
+async fn a_rebuild_refreshes_search_projections() {
+    let h = fresh_harness();
+    let page_id = customers_instance(&h, &["widget alpha"]).await;
+    rewrite_source(&h, &["gadget beta"]);
+
+    h.indexer.rebuild().await.unwrap();
+    assert_eq!(sql_score(&h, "gadget", &page_id).await, Some(1.0));
+    assert_eq!(sql_score(&h, "widget", &page_id).await, None);
+}

@@ -2501,6 +2501,28 @@ impl EscurelConfig {
                                 epoch_at_adopt,
                                 "writer boot: adopted existing lake content before serving"
                             );
+                            // The adopt re-created the SQL views but not their search
+                            // projections (local cache; this DuckDB is fresh per boot).
+                            // Capture them in the background: one source scan per view,
+                            // on its own connection, so serving does not wait for it.
+                            // Until a view's projection lands, the SQL lane has no
+                            // candidate for it; it never falls back to scanning.
+                            let warm = Arc::clone(&indexer);
+                            tokio::spawn(async move {
+                                let t = std::time::Instant::now();
+                                match warm.refresh_search_projections().await {
+                                    Ok(()) => tracing::info!(
+                                        target: "escurel",
+                                        elapsed_ms = t.elapsed().as_millis() as u64,
+                                        "writer boot: sql_view search projections captured"
+                                    ),
+                                    Err(e) => tracing::warn!(
+                                        target: "escurel",
+                                        error = %e,
+                                        "writer boot: sql_view search projections not captured"
+                                    ),
+                                }
+                            });
                         }
 
                         // Phase B (DuckLake PR 8): the writer ALSO moves

@@ -120,6 +120,14 @@ impl SqlViewBackend {
             overlay_body,
         );
         self.indexer.update_page(&page_id, &content).await?;
+        // Capture the search projection now, while the source was just read
+        // successfully. Best-effort: a failure leaves the instance searchable by its
+        // page text and the next refresh retries.
+        let cols = super::sql_view_search::search_columns(&self.indexer, skill).await;
+        let sig = super::sql_view_search::signature(&binding_hash, &cols);
+        if let Err(e) = super::sql_view_search::capture(&self.indexer, &view, &sig, &cols).await {
+            tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not captured");
+        }
 
         Ok(Materialized {
             page_id,
@@ -458,33 +466,22 @@ pub(crate) async fn search_candidates(
             .collect()
     };
 
-    // 2. Per instance: match q against the skill's search_text columns.
+    // 2. Per instance: match q against the LOCAL projection of the skill's
+    //    search_text columns (never the source: see `sql_view_search`).
     let pattern = format!("%{q}%");
     let mut hits = Vec::new();
     for row in rows {
-        let Ok(binding) = indexer.skill_backend(&row.skill).await else {
-            continue;
-        };
-        let Some(sv) = binding.sql_view else { continue };
-        let cols: Vec<&String> = sv
-            .search_text
-            .iter()
-            .filter(|c| is_valid_identifier(c))
-            .collect();
+        let cols = super::sql_view_search::search_columns(indexer, &row.skill).await;
         if cols.is_empty() || !is_managed_view(&row.view) {
             continue;
         }
-        let where_clause = cols
-            .iter()
-            .map(|c| format!("{c} ILIKE ?"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let sql = format!("SELECT count(*) FROM {} WHERE {where_clause}", row.view);
-        let count: i64 = {
+        let binding_hash = row.frontmatter["backend_ref"]["binding_hash"]
+            .as_str()
+            .unwrap_or_default();
+        let sig = super::sql_view_search::signature(binding_hash, &cols);
+        let count = {
             let conn = indexer.conn.lock().await;
-            let binds: Vec<&str> = cols.iter().map(|_| pattern.as_str()).collect();
-            conn.query_row(&sql, duckdb::params_from_iter(binds), |r| r.get(0))
-                .unwrap_or(0)
+            super::sql_view_search::match_count(&conn, &row.view, &sig, &pattern)
         };
         if count > 0 {
             hits.push(crate::search::SearchHit {
@@ -1146,6 +1143,23 @@ pub(crate) async fn reconstruct_views(indexer: &Indexer) -> Result<(), crate::In
             // Best-effort: a source that is offline now is reported by
             // validate_bindings, not fatal to the whole rebuild.
             let _ = materialise_view_on(indexer, &view, &binding, false).await;
+        }
+    }
+    Ok(())
+}
+
+/// Re-capture every `sql_view` instance's search projection from its view
+/// (see `sql_view_search`). Best-effort per view: one whose source is
+/// unreachable keeps its previous projection and is logged.
+pub(crate) async fn refresh_search_projections(
+    indexer: &Indexer,
+) -> Result<(), crate::IndexerError> {
+    for (_page_id, skill, view, backend_ref) in enumerate_sql_view_overlays(indexer).await? {
+        let cols = super::sql_view_search::search_columns(indexer, &skill).await;
+        let hash = backend_ref["binding_hash"].as_str().unwrap_or_default();
+        let sig = super::sql_view_search::signature(hash, &cols);
+        if let Err(e) = super::sql_view_search::capture(indexer, &view, &sig, &cols).await {
+            tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
         }
     }
     Ok(())

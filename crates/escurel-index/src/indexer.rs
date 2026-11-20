@@ -2147,6 +2147,7 @@ impl Indexer {
         // must be reconstructed from each overlay's backend_ref.source so a
         // from-scratch rebuild yields a queryable index (REQ-NF-01).
         self.rebuild_sql_views().await?;
+        self.refresh_search_projections().await?;
         // Document chunks are derived from the retained blob: re-extract +
         // re-chunk + re-embed + re-index, replacing the single overlay block
         // the main loop wrote with the correct chunk-blocks (REQ-NF-01).

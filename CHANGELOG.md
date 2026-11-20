@@ -8,6 +8,17 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Fixed:
+- **`search` no longer scans every `sql_view` source on every call.** The SQL lane matched `q` with
+  `SELECT count(*) FROM vw_… WHERE col ILIKE ?` per instance, per query variant, on the tenant's one connection — a
+  full read of each external source (parquet on object storage in production) per search. In the lab an unfiltered
+  search took more than 90 s, and every other tool queued behind those scans. The lane now reads a local projection
+  of each view's `search_text` values (distinct texts with their row counts, capped at 100 000 per view), captured on
+  a cloned connection by `create_instance`, `rebuild`, and in the background after a writer boot. Match counts and
+  ranking are unchanged. **Behaviour change:** a change to a source becomes searchable after the next capture
+  (re-create the instance, rebuild, or restart), not immediately; `Indexer::refresh_search_projections` re-captures
+  on demand. Reading an instance (`query_instance`, projections) still reads the source live.
+
 ## v2026.11.20 — BREAKING (skill pages are written by administrators)
 
 Writing a skill page and promoting a draft of one need `escurel:admin` or a group named in

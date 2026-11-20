@@ -21,6 +21,7 @@ pub mod remote;
 pub mod rows;
 pub mod rows_write;
 mod sql_view;
+mod sql_view_search;
 
 /// Run a synchronous, possibly long section (a source query or ATTACH that blocks on the network)
 /// without occupying the async runtime: on a multi-thread runtime other tasks are moved off this
@@ -264,6 +265,15 @@ impl Indexer {
         skill_filter: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         sql_view::search_candidates(self, q, skill_filter).await
+    }
+
+    /// Re-capture the SQL lane's local search projection of every `sql_view`
+    /// instance from its source. Search reads only these projections, never the
+    /// source, so a source change becomes searchable after this runs. Called by
+    /// `create_instance` (that instance), `rebuild`, and in the background after a
+    /// writer boot. Best-effort per view.
+    pub async fn refresh_search_projections(&self) -> Result<(), IndexerError> {
+        sql_view::refresh_search_projections(self).await
     }
 
     /// Reconstruct every SQL view from its overlay's `backend_ref.source`
