@@ -6,7 +6,25 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## Unreleased — BREAKING (skill pages are written by administrators)
+
+**Upgrade checklist:**
+1. Writing a skill page, and promoting a draft of one, now needs `escurel:admin` unless you name more groups in
+   `ESCUREL_SKILL_ADMIN_GROUPS`. A deployment whose members author skills directly sets it to those members'
+   group, or to `*` for the earlier behaviour (every writer the rest of the write ACL allows).
+2. Nothing changes under `ESCUREL_WRITE_ACL=off`; under `log` the would-be refusals are logged.
+
+Added:
+- **Skill-page write rule (`ESCUREL_SKILL_ADMIN_GROUPS`).** A skill page (`markdown/skills/*`, or any page whose stored
+  or incoming frontmatter says `kind: skill`) is written only by `escurel:admin` or a person in one of the named groups
+  (token groups or `group_members`; a run or agent token is never granted by a group). Every write door applies it:
+  `update_page` (branch writes included), `promote_draft` (with or without corrected content), `promote_changeset`
+  and `merge_branch` (refused as a whole before any member lands), `delete_page`, `move_page`, `open_session` and
+  the `close_session` commit. Proposing stays open: whoever could write the page before may still `create_draft`
+  it, so authors propose and administrators promote. The refusal is an `ok: false` issue with code
+  `skill_page_needs_admin` naming the page and who may write it. Instance pages keep their own ACL. Boot fails on
+  `*` mixed with group names or on a structural group (`public`, `owner`, `admin`). `escurel-test-gateway` reads the
+  variable under `--write-acl-enforce`.
 
 ## v2026.11.18
 

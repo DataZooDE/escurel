@@ -233,6 +233,9 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub struct ServerConfig {
     /// Per-instance write-ACL enforcement mode (`ESCUREL_WRITE_ACL`).
     pub write_acl: WriteAclMode,
+    /// Who may write a skill page and promote a draft of one (`ESCUREL_SKILL_ADMIN_GROUPS`):
+    /// `escurel:admin` only by default. Part of the write ACL, so `write_acl` `off`/`log` relax it.
+    pub skill_write_policy: escurel_index::SkillWritePolicy,
     /// Per-event ACL enforcement mode for the event bus
     /// (`ESCUREL_EVENT_ACL`).
     pub event_acl: EventAclMode,
@@ -716,6 +719,9 @@ pub async fn serve(
     // The operator's credential policy (secret references, attach-target checks) for every SQL source
     // this gateway opens. Installed on the served indexer; `IndexerHandle::swap` carries it over.
     if let Some(h) = config.indexer.as_ref() {
+        // Who may write skill pages; `IndexerHandle::swap` carries it over, as the resolver.
+        h.current()
+            .set_skill_write_policy(config.skill_write_policy.clone());
         h.current().set_credential_resolver(Arc::new(
             crate::credential_policy::ServerCredentialPolicy::new(
                 config.egress.clone(),

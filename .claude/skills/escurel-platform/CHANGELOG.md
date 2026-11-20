@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.31.0 — skill pages are written by administrators
+
+- **BREAKING:** writing a skill page and promoting a draft of one need `escurel:admin` or a group named in
+  `ESCUREL_SKILL_ADMIN_GROUPS` (`*` restores the earlier behaviour). Every write door applies it; `create_draft` stays
+  open; a changeset or branch holding such a page is refused as a whole. New issue code `skill_page_needs_admin`
+  (references/08 § Who may write a skill page, references/01).
+- `ConfigOverrides.skill_admin_groups` sets it on an `EscurelProcess` (`None` = the product default); the
+  `escurel-test-gateway` binary reads `ESCUREL_SKILL_ADMIN_GROUPS` under `--write-acl-enforce` (references/06).
+
 ## 0.30.0 — chat bridge hardening (#835)
 
 - **The gateway checks the Teams asker itself** (opt-in, `ESCUREL_AUTH_TEAMS_APP_ID` + `_APP_SECRET[_FILE]`):

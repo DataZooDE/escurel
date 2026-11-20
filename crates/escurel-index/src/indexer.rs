@@ -163,6 +163,8 @@ pub struct Indexer {
     /// server installs it. `None` (a bare indexer, most tests) uses the stored value as it is.
     pub(crate) credential_resolver:
         std::sync::RwLock<Option<crate::credential_resolver::SharedResolver>>,
+    /// Who may write a skill page (`ESCUREL_SKILL_ADMIN_GROUPS`); the server installs it.
+    pub(crate) skill_write_policy: std::sync::RwLock<crate::skill_pages::SkillWritePolicy>,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -456,6 +458,7 @@ impl Indexer {
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
             sql_connect_timeout: crate::backend::SQL_CONNECT_TIMEOUT,
             credential_resolver: std::sync::RwLock::new(None),
+            skill_write_policy: std::sync::RwLock::new(Default::default()),
         })
     }
 

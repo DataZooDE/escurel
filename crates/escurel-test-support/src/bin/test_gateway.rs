@@ -38,7 +38,8 @@
 //! The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works.
 //!
 //! Production enforcement can be reproduced: `--event-acl-enforce` (or `ESCUREL_EVENT_ACL`) sets
-//! the event ACL, `ESCUREL_AUTH_ROLE_TOOLS` configures the service-role gate, and
+//! the event ACL, `ESCUREL_AUTH_ROLE_TOOLS` configures the service-role gate, `ESCUREL_SKILL_ADMIN_GROUPS` who
+//! may write skill pages (with `--write-acl-enforce`), and
 //! `--service-subject` with `--service-group` adds a `service_bearer` for a worker identity
 //! (role `agent`, those groups; also kept fresh in `--bearer-file`).
 //!
@@ -298,6 +299,9 @@ async fn main() {
             role_tools: std::env::var("ESCUREL_AUTH_ROLE_TOOLS")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            // Who may write skill pages and promote drafts of them, from the production variable
+            // (unset: `escurel:admin` only, as in production). Only under `--write-acl-enforce`.
+            skill_admin_groups: std::env::var("ESCUREL_SKILL_ADMIN_GROUPS").ok(),
             fixture_tenant_export: args.tenant_export,
             // Live CRDT sessions, so the editor's personal-draft path works against it.
             live_crdt: true,

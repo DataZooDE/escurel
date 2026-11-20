@@ -29,7 +29,7 @@ The full surface (`crates/escurel-test-support/src/`):
 | `AuthMode::{Disabled, TestIssuer, External{issuer_url, jwks_url}}` | `TestIssuer` runs an in-process JWKS+signer (`references/08`) |
 | `Role::{Agent, Admin}` | role for a minted token |
 | `FixtureBuilder` / `TenantFixture` | chainable seeding (`references/07`) |
-| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, `pack_secret` to enable the pack surface, …) |
+| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, `pack_secret` to enable the pack surface, `write_acl`, `skill_admin_groups` (`ESCUREL_SKILL_ADMIN_GROUPS`; `None` = `escurel:admin` only, enforced under `write_acl: Some(Enforce)`), …) |
 | `.base_url()` / `.mcp_url()` / `.ws_url()` | HTTP base / `/mcp` / `/ws` URLs (point your backend's `escurel-client` at `base_url()`) |
 | `.mint_token(tenant, role) -> String` | bearer; **`TestIssuer` only** (panics otherwise) |
 | `.client() -> Client` | sync; typed `escurel-client` (HTTP MCP) pre-tokened for the default `acme` tenant |

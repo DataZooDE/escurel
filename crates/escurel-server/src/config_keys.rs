@@ -282,6 +282,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "per-instance write ACL: `enforce` (reject; the default, also for an unrecognised value) | `log` (warn but allow) | `off` (no check, explicit opt-out). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only.",
     },
     ConfigKey {
+        name: "ESCUREL_SKILL_ADMIN_GROUPS",
+        component: "Server",
+        default: "— (`escurel:admin` only)",
+        doc: "who may write a SKILL page (`markdown/skills/*`, or any page declaring `kind: skill`) and promote a draft of one: `escurel:admin`, or a person in one of these comma-separated groups (e.g. `portfolio:tenant-admin`). `*` = every caller the rest of the write ACL allows (the behaviour before v2026.11.20). Proposing (`create_draft`) stays open. Part of the write ACL: `ESCUREL_WRITE_ACL=off` skips it, `log` warns. Boot fails on `*` mixed with groups or on a structural group",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_ADMIN_ROLE_CLAIM",
         component: "Server",
         default: "roles",

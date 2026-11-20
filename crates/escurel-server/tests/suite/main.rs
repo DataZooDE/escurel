@@ -173,6 +173,7 @@ mod skill_authority_gate;
 mod skill_contract;
 mod skill_doc_parity;
 mod skill_fields;
+mod skill_page_write_acl;
 mod skill_params;
 mod skill_render_and_blocks;
 mod skill_vocabulary;

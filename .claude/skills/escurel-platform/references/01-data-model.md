@@ -534,7 +534,10 @@ triggers. Adding, removing or changing any of them on a skill page needs an
 admin, or membership of the **stored** page's `acl.update` groups; a new
 skill that sets one is an admin's. `description`, `summary`, `fields` and
 the body stay free. Who exactly, every write door, and the refusal shape:
-references/08 § Skill authority keys.
+references/08 § Skill authority keys. Writing a skill page at all (and
+promoting a draft of one) needs `escurel:admin` or a group in
+`ESCUREL_SKILL_ADMIN_GROUPS`; proposing a draft stays open (references/08 §
+Who may write a skill page).
 
 ### System skills: `escurel`, `agent`, `runtime` and `chat-channel`
 

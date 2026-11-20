@@ -416,13 +416,15 @@ async fn an_import_over_a_governed_skill_names_the_authority_keys_it_would_remov
 /// Under an enforced write ACL (crew U-F5) a non-curator's import is a draft
 /// and nothing more: the skill does not exist until someone promotes it, and
 /// a curator (admin) can. The draft names the authority it would grant
-/// (`agent:`). NOT pinned here: whether a non-curator may promote their own
-/// import — today the gateway lets any writer promote a skill-page draft,
-/// `agent:` included (reported as a finding, not changed in this PR).
+/// (`agent:`). With skill pages open to every writer
+/// (`ESCUREL_SKILL_ADMIN_GROUPS=*`), the authority-key rule is what refuses
+/// Bob's promotion; under the default the skill-page rule refuses it first
+/// (next test).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn under_an_enforced_acl_an_import_is_a_draft_a_curator_promotes() {
     let h = start_with(escurel_test_support::ConfigOverrides {
         write_acl: Some(escurel_test_support::WriteAclMode::Enforce),
+        skill_admin_groups: Some("*".to_owned()),
         ..Default::default()
     })
     .await;
@@ -468,5 +470,44 @@ async fn under_an_enforced_acl_an_import_is_a_draft_a_curator_promotes() {
         .expect("the curator promotes");
     assert_eq!(promoted["ok"], true, "{promoted}");
     assert!(listed(curator).await);
+    h.process.shutdown().await;
+}
+
+/// The product default (`ESCUREL_SKILL_ADMIN_GROUPS` unset): anyone may import
+/// a SKILL.md as a draft, and only `escurel:admin` promotes it — even a plain
+/// skill without authority keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn by_default_only_an_admin_promotes_an_imported_skill() {
+    let h = start_with(escurel_test_support::ConfigOverrides {
+        write_acl: Some(escurel_test_support::WriteAclMode::Enforce),
+        ..Default::default()
+    })
+    .await;
+    let bob = h
+        .process
+        .mint_token_with_sub(TENANT, Role::Agent, "member:bob");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("SKILL.md"),
+        "---\nname: plain\ndescription: No authority.\n---\n# plain\n",
+    )
+    .unwrap();
+    let (drafted, _) = cli_as(&h, &bob, &["skill", "import", p(dir.path())])
+        .await
+        .expect("anyone may propose");
+    let draft_id = drafted["draft"]["draft_id"].as_str().unwrap();
+    let (refused, _) = cli_as(&h, &bob, &["draft", "promote", "--draft", draft_id])
+        .await
+        .expect("an ok:false answer, not a transport error");
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(
+        refused["issues"][0]["code"], "skill_page_needs_admin",
+        "{refused}"
+    );
+    let admin = h.process.mint_token(TENANT, Role::Admin);
+    let (promoted, _) = cli_as(&h, &admin, &["draft", "promote", "--draft", draft_id])
+        .await
+        .expect("an admin promotes");
+    assert_eq!(promoted["ok"], true, "{promoted}");
     h.process.shutdown().await;
 }
