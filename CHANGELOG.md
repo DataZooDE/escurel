@@ -8,6 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.20.1 — search no longer scans sql_view sources (#849)
+
+No upgrade steps. No schema, lake or env change; the new local `sql_view_search_text` table is a derived cache
+created on first capture.
+
 Fixed:
 - **`search` no longer scans every `sql_view` source on every call.** The SQL lane matched `q` with
   `SELECT count(*) FROM vw_… WHERE col ILIKE ?` per instance, per query variant, on the tenant's one connection — a
