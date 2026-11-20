@@ -381,6 +381,33 @@ under way fails on its next call, and a retry — when the run has attempts left
 — runs on a fresh token (a keyless runner asks the gateway for a new token on
 every attempt). Only an admin may write an agent page.
 
+## Who may write a skill page (`ESCUREL_SKILL_ADMIN_GROUPS`)
+
+Writing a skill page, and promoting a draft of one, needs an `escurel:admin`
+person or a **person** in one of the groups the operator names in
+`ESCUREL_SKILL_ADMIN_GROUPS` (comma-separated; token groups or
+`add_group_member` membership). Unset means `escurel:admin` only; `*` means
+every caller the rest of the write ACL allows (the behaviour before this
+rule). A run or agent token is never granted by a group: its skill-page edits
+are held as drafts, and it cannot promote. Boot fails on `*` mixed with group
+names or on a structural group (`public`, `owner`, `admin`).
+
+A page is a skill page when its id is under `markdown/skills/` or its stored or
+incoming frontmatter says `kind: skill`. The rule applies to `update_page`
+(branch writes too), `promote_draft` (with or without corrected `content`),
+`promote_changeset` and `merge_branch` (a batch holding a skill page the caller
+may not write is refused as a whole, before any member lands), `delete_page`,
+`move_page`, `open_session` and the `close_session` commit. **Proposing stays
+open**: `create_draft` on a skill page is judged as before, so authors propose
+and the configured administrators promote.
+
+The refusal is an `ok: false` result whose issue has code
+`skill_page_needs_admin` and a message naming the page and who may write it.
+It follows `ESCUREL_WRITE_ACL` (`off` skips it, `log` logs and allows). It is
+independent of the authority-key rule below: a configured administrator still
+needs that rule's grant to change an authority key (an `escurel:admin` has
+both).
+
 ## Skill authority keys
 
 Some skill-page keys are **authority**, not description: `acl`, `visibility`,

@@ -530,6 +530,63 @@ pub(super) async fn skill_authority_refusal(
     Err(refusal)
 }
 
+/// The `skill_page_needs_admin` issue when the skill-page rule (`ESCUREL_SKILL_ADMIN_GROUPS`) is
+/// what refuses `caller` writing `content` at `page_id`; `None` when it is not. The mode is the
+/// caller's to apply: this only names the refusal.
+pub(super) async fn skill_page_issue(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    page_id: &str,
+    content: &str,
+    location: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    let denied = indexer
+        .skill_page_write_denied(caller, page_id, content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("skill-page rule: {e}")))?;
+    Ok(denied.then(|| {
+        json!({
+            "severity": "error",
+            "code": "skill_page_needs_admin",
+            "location": location,
+            "message": format!(
+                "write denied: `{page_id}` is a skill page; writing it or promoting a draft of it \
+                 needs {} (ESCUREL_SKILL_ADMIN_GROUPS). Propose the change with `create_draft` and \
+                 ask an administrator to promote it",
+                indexer.skill_write_policy().describe()
+            ),
+        })
+    }))
+}
+
+/// The skill-page rule for one member of a batch (`promote_changeset`, `merge_branch`), asked before
+/// any member lands so the batch is refused as a whole: `Some(issue)` to collect under `Enforce`;
+/// `Log` records the would-be refusal and allows; `Off` skips.
+pub(super) async fn skill_page_batch_issue(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    content: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    let mode = write_acl.for_page(page_id, content);
+    if mode == crate::server::WriteAclMode::Off {
+        return Ok(None);
+    }
+    let Some(issue) = skill_page_issue(indexer, caller, page_id, content, page_id).await? else {
+        return Ok(None);
+    };
+    if mode == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            "skill-page rule would refuse this batch member (log mode) — allowing"
+        );
+        return Ok(None);
+    }
+    Ok(Some(issue))
+}
+
 /// The per-instance WRITE ACL as one decision, shared by `update_page` and by promotion (which must
 /// ask it BEFORE a write-back touches an external system). `Off` skips; `Log` records a would-be
 /// denial and allows; `Enforce` answers the `forbidden` refusal. `Ok(None)` = go on.
@@ -576,6 +633,9 @@ pub(super) async fn write_acl_refusal(
             "write-ACL would deny this write (log mode) — allowing"
         );
         return Ok(None);
+    }
+    if let Some(issue) = skill_page_issue(indexer, caller, page_id, content, "page_id").await? {
+        return Ok(Some(json!({ "ok": false, "issues": [issue] })));
     }
     Ok(Some(json!({
         "ok": false,
@@ -1395,6 +1455,11 @@ pub(super) async fn tool_move_page(
             );
             continue;
         }
+        if let Some(issue) =
+            skill_page_issue(indexer, &caller, page_id, &existing, location).await?
+        {
+            return Ok(json!({ "ok": false, "issues": [issue] }));
+        }
         return Ok(json!({
             "ok": false,
             "issues": [{
@@ -1624,6 +1689,11 @@ pub(super) async fn tool_delete_page(
                     "write-ACL would deny this delete (log mode) — allowing"
                 );
             } else {
+                if let Some(issue) =
+                    skill_page_issue(indexer, &caller, &a.page_id, &existing, "page_id").await?
+                {
+                    return Ok(json!({ "ok": false, "issues": [issue] }));
+                }
                 return Ok(json!({
                     "ok": false,
                     "issues": [{

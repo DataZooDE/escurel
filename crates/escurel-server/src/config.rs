@@ -306,6 +306,10 @@ pub enum ConfigError {
     /// malformed. Fatal at boot: a typo in a security allow-list must not start a gateway.
     #[error("invalid value for ESCUREL_AUTH_ROLE_TOOLS: {0}")]
     RoleTools(String),
+    /// `ESCUREL_SKILL_ADMIN_GROUPS` mixes `*` with group names or names a structural group.
+    /// Fatal at boot: a typo must not leave the skill-page rule other than the operator meant.
+    #[error("invalid value for ESCUREL_SKILL_ADMIN_GROUPS: {0}")]
+    SkillAdminGroups(String),
     /// The chat-bridge trust (`ESCUREL_AUTH_BRIDGE_*`) is incomplete or names an issuer the
     /// gateway does not trust. Fatal at boot: a restriction that cannot bind must not start.
     #[error("invalid chat-bridge trust: {0}")]
@@ -808,6 +812,9 @@ pub struct EscurelConfig {
     /// enforces). Read through the config source like every other key, so an embedded gateway built
     /// from an injected map (a test) can choose it without touching the process-global environment.
     pub write_acl: crate::WriteAclMode,
+    /// Who may write a skill page and promote a draft of one (`ESCUREL_SKILL_ADMIN_GROUPS`: unset =
+    /// `escurel:admin` only, `*` = every writer, else comma-separated groups).
+    pub skill_write_policy: escurel_index::SkillWritePolicy,
     /// The operator's egress policy (`ESCUREL_EGRESS_*`, `ESCUREL_SQL_FILE_DIRS`, `ESCUREL_SQL_OBJECT_PREFIXES`):
     /// what an outbound call and a SQL source may reach. Read through the config source like every other
     /// key, and judged from the very first view rebuild of the boot: the credential policy built from it
@@ -1563,6 +1570,10 @@ impl EscurelConfig {
         // Fail closed: unset or a typo enforces (`WriteAclMode::parse`).
         let write_acl =
             crate::WriteAclMode::parse(&env.get("ESCUREL_WRITE_ACL").unwrap_or_default());
+        let skill_write_policy = escurel_index::SkillWritePolicy::parse(
+            &env.get("ESCUREL_SKILL_ADMIN_GROUPS").unwrap_or_default(),
+        )
+        .map_err(ConfigError::SkillAdminGroups)?;
 
         let secs_knob = |var: &'static str,
                          default: std::time::Duration|
@@ -1859,6 +1870,7 @@ impl EscurelConfig {
             metrics_listen,
             ingest_contextualize,
             write_acl,
+            skill_write_policy,
             egress,
             rows_query_timeout,
             sql_connect_timeout,
@@ -2662,6 +2674,7 @@ impl EscurelConfig {
             // log | off. Env-only (no TOML key) so it can be flipped at deploy
             // without a config-file change; read via the config source in `from_source`.
             write_acl: self.write_acl,
+            skill_write_policy: self.skill_write_policy.clone(),
             event_acl: crate::EventAclMode::from_env(),
             role_tools: self
                 .auth
@@ -3403,6 +3416,32 @@ mod tests {
 
     // The write ACL is chosen through the config SOURCE, not the process environment, so an embedded
     // gateway (a test) can pick a mode without a process-global `set_var`. Unset or a typo enforces.
+    #[test]
+    fn skill_admin_groups_are_read_from_the_config_source_and_a_typo_fails_boot() {
+        assert_eq!(
+            cfg_from(&[]).skill_write_policy,
+            escurel_index::SkillWritePolicy::AdminOnly
+        );
+        assert_eq!(
+            cfg_from(&[("ESCUREL_SKILL_ADMIN_GROUPS", "*")]).skill_write_policy,
+            escurel_index::SkillWritePolicy::Open
+        );
+        assert_eq!(
+            cfg_from(&[("ESCUREL_SKILL_ADMIN_GROUPS", "portfolio:tenant-admin")])
+                .skill_write_policy,
+            escurel_index::SkillWritePolicy::Groups(
+                std::iter::once("portfolio:tenant-admin".to_owned()).collect()
+            )
+        );
+        let map: HashMap<String, String> =
+            std::iter::once(("ESCUREL_SKILL_ADMIN_GROUPS".to_owned(), "*,ops".to_owned()))
+                .collect();
+        assert!(matches!(
+            EscurelConfig::from_source(&|k: &str| map.get(k).cloned()),
+            Err(ConfigError::SkillAdminGroups(_))
+        ));
+    }
+
     #[test]
     fn write_acl_is_read_from_the_config_source_and_fails_closed() {
         assert_eq!(cfg_from(&[]).write_acl, crate::WriteAclMode::Enforce);

@@ -234,7 +234,7 @@ pub fn captured_by(provenance: &Value) -> Option<&str> {
 /// to the instance owner; `admin` only via the verified admin role. Any
 /// occurrence of these in a token/membership source is discarded so a
 /// misconfigured IdP can never impersonate them (CR §8.2).
-const RESERVED_GROUPS: [&str; 3] = ["public", "owner", "admin"];
+pub(crate) const RESERVED_GROUPS: [&str; 3] = ["public", "owner", "admin"];
 
 /// The four CRUD verbs an `acl:` block grants. `Delete` is parsed and
 /// reported but, in v1, deletion flows through the same overwrite path as
@@ -629,13 +629,40 @@ impl Indexer {
     /// the incoming content (no create-for-/transfer-to another subject).
     /// Public / no-`owner_field` instances are therefore admin-write-only.
     ///
-    /// Only `kind: instance` pages are gated here (P1); skill/other pages
-    /// return `Ok(true)` and keep the existing meta-skill protection.
+    /// `kind: instance` pages are judged by their ACL here (P1). A SKILL page
+    /// (`markdown/skills/*`, or one declaring `kind: skill`) needs admin or a
+    /// group of the operator's skill-page rule ([`crate::SkillWritePolicy`],
+    /// `ESCUREL_SKILL_ADMIN_GROUPS`); other pages return `Ok(true)` and keep
+    /// the existing meta-skill protection.
     pub async fn may_write_page(
         &self,
         caller: &AclCaller<'_>,
         page_id: &str,
         content: &str,
+    ) -> Result<bool, IndexerError> {
+        self.may_write_page_as(caller, page_id, content, true).await
+    }
+
+    /// Whether `caller` may PROPOSE `content` at `page_id` as a draft on the
+    /// strength of a write grant: [`Self::may_write_page`] without the
+    /// skill-page rule. Writing a skill page is an administrator's, proposing
+    /// a change to one is not; the promotion is judged by `may_write_page`.
+    pub async fn may_draft_page(
+        &self,
+        caller: &AclCaller<'_>,
+        page_id: &str,
+        content: &str,
+    ) -> Result<bool, IndexerError> {
+        self.may_write_page_as(caller, page_id, content, false)
+            .await
+    }
+
+    async fn may_write_page_as(
+        &self,
+        caller: &AclCaller<'_>,
+        page_id: &str,
+        content: &str,
+        skill_pages_gated: bool,
     ) -> Result<bool, IndexerError> {
         // An agent's write scope binds even an admin-role token: it is the
         // narrowing the agent exists for.
@@ -644,6 +671,13 @@ impl Indexer {
         }
         if caller.is_admin {
             return Ok(true);
+        }
+        if skill_pages_gated
+            && self
+                .skill_page_write_denied(caller, page_id, content)
+                .await?
+        {
+            return Ok(false);
         }
         let parsed = parse(content)?;
         // The runner keeps its own `runtime` page (#828): the one admin-only
@@ -1261,7 +1295,10 @@ impl Indexer {
     /// verb method (it resolves differently for read vs create vs
     /// overwrite); `admin` is handled by the up-front bypass. DuckDB
     /// membership joins in here in a later PR.
-    async fn caller_groups(&self, caller: &AclCaller<'_>) -> Result<HashSet<String>, IndexerError> {
+    pub(crate) async fn caller_groups(
+        &self,
+        caller: &AclCaller<'_>,
+    ) -> Result<HashSet<String>, IndexerError> {
         let mut groups = HashSet::new();
         groups.insert("public".to_owned());
         for g in caller.token_groups {

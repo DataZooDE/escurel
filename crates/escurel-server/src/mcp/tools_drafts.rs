@@ -433,9 +433,11 @@ pub(super) async fn tool_create_draft(
     // make it is checked when it is written, not when it is approved.
     let write_acl = write_acl.for_page(&a.target_page_id, &a.content);
     if write_acl != crate::server::WriteAclMode::Off {
-        // A write grant, or an `acl.propose` grant: a draft is a proposal, not a write.
+        // A write grant, or an `acl.propose` grant: a draft is a proposal, not a write. The
+        // skill-page rule is not asked here: anyone may PROPOSE a skill change, and only its
+        // promotion needs the skill administrators (`promote_draft` / `promote_changeset`).
         let allowed = indexer
-            .may_write_page(&caller, &a.target_page_id, &a.content)
+            .may_draft_page(&caller, &a.target_page_id, &a.content)
             .await
             .map_err(|e| JsonRpcError::internal(format!("create_draft acl: {e}")))?
             || indexer
@@ -1691,6 +1693,20 @@ pub(super) async fn tool_promote_changeset(
         .collect();
     let mut issues = Vec::new();
     for m in &open {
+        // A skill-page member the promoter may not write refuses the batch as a whole, before any
+        // member lands (`ESCUREL_SKILL_ADMIN_GROUPS`): half a release is not a smaller release.
+        if let Some(issue) = crate::mcp::tools_write::skill_page_batch_issue(
+            indexer,
+            &caller,
+            write_acl,
+            &m.target_page_id,
+            &m.content,
+        )
+        .await?
+        {
+            issues.push(issue);
+            continue;
+        }
         // A member that changes a skill's authority keys refuses the batch before any member lands.
         crate::mcp::tools_write::skill_authority_refusal(
             indexer,

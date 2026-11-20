@@ -266,6 +266,7 @@ impl IndexerHandle {
         if let Some(resolver) = self.current().credential_resolver() {
             next.set_credential_resolver(resolver);
         }
+        next.set_skill_write_policy(self.current().skill_write_policy());
         self.0.swap(next)
     }
 }

@@ -36,6 +36,9 @@ async fn gateway(mode: WriteAclMode) -> EscurelProcess {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             write_acl: Some(mode),
+            // Skill pages open to every writer: this suite pins the authority-key rule on its own
+            // (the skill-page rule is `skill_page_write_acl.rs`).
+            skill_admin_groups: Some("*".to_owned()),
             ..Default::default()
         },
         fixtures: Some(
@@ -224,6 +227,7 @@ async fn crdt_gateway() -> EscurelProcess {
         config_overrides: ConfigOverrides {
             live_crdt: true,
             write_acl: Some(WriteAclMode::Enforce),
+            skill_admin_groups: Some("*".to_owned()),
             ..Default::default()
         },
         fixtures: Some(

@@ -50,6 +50,8 @@ pub struct ConfigOverrides {
     /// Service roles and their allowed tools, in the `ESCUREL_AUTH_ROLE_TOOLS` syntax
     /// (`role=tool,tool;role=tool`). `None` → no restricted role.
     pub role_tools: Option<String>,
+    /// `ESCUREL_SKILL_ADMIN_GROUPS` (`None` = the product default, `escurel:admin` only).
+    pub skill_admin_groups: Option<String>,
     /// What a run's recorded tool calls keep beyond sizes. `None` → the
     /// production default (`Summary`).
     pub toolcall_detail: Option<ToolcallDetailMode>,
@@ -516,6 +518,14 @@ impl EscurelProcess {
             // (or `Some(WriteAclMode::default())` to pin the shipped default).
             write_acl: overrides.write_acl.unwrap_or(WriteAclMode::Off),
             event_acl: overrides.event_acl.unwrap_or_default(),
+            skill_write_policy: overrides
+                .skill_admin_groups
+                .as_deref()
+                .map(|raw| {
+                    escurel_index::SkillWritePolicy::parse(raw)
+                        .expect("ConfigOverrides.skill_admin_groups")
+                })
+                .unwrap_or_default(),
             role_tools: overrides
                 .role_tools
                 .as_deref()

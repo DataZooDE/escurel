@@ -847,6 +847,14 @@ page authored before this existed is unaffected and the change needs no
 rollout flag of its own. The write half is gated by
 `ESCUREL_WRITE_ACL`, which defaults to `enforce`.
 
+A **skill page** (`markdown/skills/*`, or any page whose stored or incoming
+frontmatter says `kind: skill`) is outside the instance ACL above: writing
+one, or promoting a draft of one, needs `escurel:admin` or a person in a
+group named by `ESCUREL_SKILL_ADMIN_GROUPS` (`*` = every writer). Proposing
+(`create_draft`) stays open. A refusal is the issue code
+`skill_page_needs_admin`; a changeset or branch holding such a page is refused
+as a whole.
+
 #### `list_instances`
 
 ```jsonc

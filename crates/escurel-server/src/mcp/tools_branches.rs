@@ -426,6 +426,20 @@ pub(super) async fn tool_merge_branch(
                     indexer, &caller, write_acl, base, None,
                 )
                 .await?;
+                // And deleting a skill page is a skill-page write (`ESCUREL_SKILL_ADMIN_GROUPS`).
+                let stored = indexer
+                    .read_page_markdown(base)
+                    .await
+                    .map_err(|e| JsonRpcError::internal(format!("merge_branch: {e}")))?
+                    .unwrap_or_default();
+                if let Some(issue) = crate::mcp::tools_write::skill_page_batch_issue(
+                    indexer, &caller, write_acl, base, &stored,
+                )
+                .await?
+                {
+                    issues.push(issue);
+                    continue;
+                }
             }
             plan.push((page.clone(), base_twin, None, String::new()));
             continue;
@@ -464,6 +478,15 @@ pub(super) async fn tool_merge_branch(
             Some(&landed),
         )
         .await?;
+        // A skill page the merger may not write refuses the merge before anything lands.
+        if let Some(issue) = crate::mcp::tools_write::skill_page_batch_issue(
+            indexer, &caller, write_acl, &target, &landed,
+        )
+        .await?
+        {
+            issues.push(issue);
+            continue;
+        }
         let validation = indexer
             .validate(base_twin.as_deref(), &landed)
             .await
