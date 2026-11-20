@@ -127,7 +127,7 @@ pub struct Trigger {
     /// appends the reply. `None` for every other trigger.
     pub chat: Option<ChatContext>,
     /// The agent profile the event asks to run as (`provenance.agent`,
-    /// `"[[agent::x]]"` or a bare id; #823). A REQUEST: honoured only when that
+    /// `"[[escurel-agent::x]]"` (or the legacy `[[agent::x]]`) or a bare id; #823). A REQUEST: honoured only when that
     /// agent lists the run's skill ([`crate::choose_agent`]). An agent can only
     /// narrow a run, so the capturer naming one is not a privilege.
     pub agent: Option<String>,
@@ -318,7 +318,7 @@ impl Trigger {
 /// The agent an event's `provenance.agent` asks for.
 fn requested_agent(provenance: &serde_json::Value) -> Option<String> {
     let raw = provenance.get("agent")?;
-    escurel_types::agent_profile::link_id(Some(raw), "agent").or_else(|| {
+    escurel_types::agent_profile::agent_link_id(Some(raw)).or_else(|| {
         raw.as_str()
             .map(str::trim)
             .filter(|s| escurel_types::agent_profile::is_valid_agent_id(s))

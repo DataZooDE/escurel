@@ -219,6 +219,15 @@ impl LaneStore for RetryingStore {
         self.run("list", prefix, || self.inner.list(prefix)).await
     }
 
+    async fn create_if_absent(&self, key: &Key, body: Bytes) -> Result<bool> {
+        // A create that failed transiently may have landed: its retry then finds the value and
+        // answers `false`, which is still "the value is there and nobody wrote it twice".
+        self.run("create_if_absent", key, || {
+            self.inner.create_if_absent(key, body.clone())
+        })
+        .await
+    }
+
     async fn delete(&self, key: &Key) -> Result<()> {
         // A delete that failed transiently may have taken effect: its retry then finds nothing. That is
         // the outcome the caller asked for.

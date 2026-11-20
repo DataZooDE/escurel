@@ -27,13 +27,13 @@ fn instance(skill: &str) -> String {
     format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
 }
 
-const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\n\
+const SCRIBE: &str = "---\nkind: instance\nskill: escurel-agent\nid: scribe\n\
     skills: [\"[[skill::note]]\"]\n\
     scopes:\n  tools: [whoami, expand, update_page]\n  write: [\"markdown/instances/note/*\"]\n\
     ---\n# scribe\n";
 const RETIRED: &str =
-    "---\nkind: instance\nskill: agent\nid: retired\narchived: true\n---\n# retired\n";
-const SCRIBE_PAGE: &str = "markdown/instances/agent/scribe.md";
+    "---\nkind: instance\nskill: escurel-agent\nid: retired\narchived: true\n---\n# retired\n";
+const SCRIBE_PAGE: &str = "markdown/instances/escurel-agent/scribe.md";
 
 async fn gateway() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -50,8 +50,8 @@ async fn gateway() -> EscurelProcess {
                 .skill("customer", skill("customer").as_str())
                 .instance("note", "c1", instance("note").as_str())
                 .instance("customer", "c1", instance("customer").as_str())
-                .instance("agent", "scribe", SCRIBE)
-                .instance("agent", "retired", RETIRED)
+                .instance("escurel-agent", "scribe", SCRIBE)
+                .instance("escurel-agent", "retired", RETIRED)
                 .done(),
         ),
     })

@@ -266,9 +266,20 @@ impl LaneStore for DuckVfsStore {
             let mut stmt = conn
                 .prepare("SELECT content FROM read_blob(?)")
                 .map_err(|e| duck_err("prepare read", e))?;
-            let mut rows = stmt
-                .query([&url])
-                .map_err(|e| classify_missing(e, &missing, "read"))?;
+            let mut rows = match stmt.query([&url]) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    // Two Drive files under one name with the SAME bytes are one page written twice
+                    // (a lost race, an old double write): read it, and say so. Different bytes stay
+                    // an error: which one is the page is not ours to guess.
+                    if let Some(dup) = identical_duplicates(conn, &url, &e.to_string())? {
+                        tracing::warn!(path = %url, ids = ?dup.ids,
+                            "duckvfs: identical duplicate files share this name; reading one of them");
+                        return Ok(dup.body);
+                    }
+                    return Err(classify_missing(e, &missing, "read"));
+                }
+            };
             match rows
                 .next()
                 .map_err(|e| classify_missing(e, &missing, "read"))?
@@ -290,11 +301,25 @@ impl LaneStore for DuckVfsStore {
         let url = self.object_url(key);
         let version = content_version(&body);
         self.with_conn(move |conn| {
-            conn.execute(
-                "SELECT write_blob(?, ?)",
-                duckdb::params![&url, Value::Blob(body.to_vec())],
-            )
-            .map_err(|e| duck_err("write", e))?;
+            let write = |conn: &Connection| {
+                conn.execute(
+                    "SELECT write_blob(?, ?)",
+                    duckdb::params![&url, Value::Blob(body.to_vec())],
+                )
+            };
+            if let Err(e) = write(conn) {
+                // Overwriting a name two identical files share: keep the first by id, remove the
+                // rest, then write. Different bytes stay an error.
+                let Some(dup) = identical_duplicates(conn, &url, &e.to_string())? else {
+                    return Err(duck_err("write", e));
+                };
+                tracing::warn!(path = %url, ids = ?dup.ids,
+                    "duckvfs: identical duplicate files share this name; removing all but one before the write");
+                for id in &dup.ids[1..] {
+                    remove_by_id(conn, id)?;
+                }
+                write(conn).map_err(|e| duck_err("write", e))?;
+            }
             Ok(version)
         })
         .await
@@ -381,9 +406,22 @@ impl LaneStore for DuckVfsStore {
         self.with_conn(move |conn| {
             // remove_file answers false for absent rather than raising,
             // which is exactly the distinction this method has to report.
-            let removed: bool = conn
-                .query_row("SELECT remove_file(?)", [&url], |row| row.get(0))
-                .map_err(|e| duck_err("delete", e))?;
+            let removed: bool =
+                match conn.query_row("SELECT remove_file(?)", [&url], |row| row.get(0)) {
+                    Ok(removed) => removed,
+                    Err(e) => {
+                        // Deleting a name that identical duplicates share removes every one of them.
+                        let Some(dup) = identical_duplicates(conn, &url, &e.to_string())? else {
+                            return Err(duck_err("delete", e));
+                        };
+                        tracing::warn!(path = %url, ids = ?dup.ids,
+                        "duckvfs: identical duplicate files share this name; removing all of them");
+                        for id in &dup.ids {
+                            remove_by_id(conn, id)?;
+                        }
+                        true
+                    }
+                };
             if removed {
                 Ok(())
             } else {
@@ -548,6 +586,82 @@ fn escape_sql(raw: &str) -> String {
     raw.replace('\'', "''")
 }
 
+/// The Drive file ids an "is ambiguous" / "already share that name" error of
+/// `duckdb-gdrive` names (`(ids: a, b)`), sorted; empty for any other error.
+fn ambiguous_ids(message: &str) -> Vec<String> {
+    if !(message.contains("is ambiguous") || message.contains("share that name")) {
+        return Vec::new();
+    }
+    let Some(rest) = message.split_once("(ids: ").map(|(_, r)| r) else {
+        return Vec::new();
+    };
+    let Some(list) = rest.split_once(')').map(|(l, _)| l) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .map(str::to_owned)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Duplicate files under one name, every one with the same bytes.
+struct IdenticalDuplicates {
+    ids: Vec<String>,
+    body: Bytes,
+}
+
+/// When `message` is a Drive name ambiguity over files with identical bytes, those files (by
+/// id, sorted) and their bytes; `None` when it is any other error or the bytes differ.
+fn identical_duplicates(
+    conn: &Connection,
+    url: &str,
+    message: &str,
+) -> Result<Option<IdenticalDuplicates>> {
+    let ids = ambiguous_ids(message);
+    if ids.len() < 2 || !url.starts_with("gdrive://") {
+        return Ok(None);
+    }
+    let mut body: Option<Vec<u8>> = None;
+    for id in &ids {
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT content FROM read_blob(?)",
+                [format!("gdrive://id:{id}")],
+                |row| row.get(0),
+            )
+            .map_err(|e| duck_err("read duplicate", e))?;
+        match &body {
+            None => body = Some(blob),
+            Some(first) if *first == blob => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(body.map(|b| IdenticalDuplicates {
+        ids,
+        body: Bytes::from(b),
+    }))
+}
+
+fn remove_by_id(conn: &Connection, id: &str) -> Result<()> {
+    conn.query_row(
+        "SELECT remove_file(?)",
+        [format!("gdrive://id:{id}")],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| duck_err("remove duplicate", e))?;
+    Ok(())
+}
+
 fn duck_err(op: &str, e: impl std::fmt::Display) -> StoreError {
     StoreError::Io(std::io::Error::other(format!("duckvfs {op}: {e}")))
 }
@@ -574,6 +688,21 @@ fn classify_missing(e: duckdb::Error, key: &Key, op: &str) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ids_of_a_drive_name_ambiguity_are_read_from_its_message() {
+        let read = "IO Error: gdrive: 'gdrive://x/markdown/skills/agent.md' is ambiguous: 2 files share \
+                    that name in the same folder (ids: 1bZ_b, 1aY-a). Use the gdrive://id:<fileId> form";
+        assert_eq!(ambiguous_ids(read), ["1aY-a", "1bZ_b"]);
+        let write = "gdrive: cannot overwrite 'x': 2 files already share that name in the destination \
+                     folder (ids: b, a). Remove or rename them";
+        assert_eq!(ambiguous_ids(write), ["a", "b"]);
+        assert!(ambiguous_ids("IO Error: No files found that match the pattern").is_empty());
+        assert!(
+            ambiguous_ids("is ambiguous (ids: a'; DROP, b)").len() == 1,
+            "an id is alphanumeric"
+        );
+    }
 
     fn cfg_for(root: &str) -> DuckVfsStoreConfig {
         DuckVfsStoreConfig {

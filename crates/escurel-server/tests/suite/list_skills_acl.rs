@@ -218,17 +218,17 @@ async fn a_skill_the_caller_may_not_read_is_absent_from_the_catalogue() {
         "dave must not see the hoffmann dossier type: {his}"
     );
     // Positive control: Dave's catalogue is NOT empty — everything he is
-    // entitled to is still there, the system skills (`agent`, `escurel`, `runtime`)
+    // entitled to is still there, the system skills (`escurel`, `escurel-agent`, `escurel-runtime`)
     // included.
     assert_eq!(
         skill_ids(&his),
         vec![
-            "agent".to_owned(),
             "customer_note".to_owned(),
             "engagement".to_owned(),
             "escurel".to_owned(),
+            "escurel-agent".to_owned(),
+            "escurel-runtime".to_owned(),
             "private_journal".to_owned(),
-            "runtime".to_owned(),
         ],
         "dave keeps every type he may read: {his}"
     );

@@ -1,6 +1,6 @@
 ---
 kind: skill
-id: runtime
+id: escurel-runtime
 description: A runner registration — which harnesses (and CLI versions) a runner
   offers, the labels it carries and how many runs it takes at once. Written by
   the runner itself; liveness comes from its status record, not this page.
@@ -14,10 +14,10 @@ acl:
   delete: [admin]
 ---
 
-# runtime — where work can run
+# escurel-runtime — where work can run
 
 A system skill, shipped into every tenant. Each `escurel-runner` writes one
-instance, `markdown/instances/runtime/<runner-id-slug>.md`, on boot and again
+instance, `markdown/instances/escurel-runtime/<runner-id-slug>.md`, on boot and again
 whenever its probe of the harness CLIs changes. Only `escurel:admin` may
 create, change or delete one, so the runner writes it with its own admin
 identity (never a run token). A runner that cannot write its page logs it once

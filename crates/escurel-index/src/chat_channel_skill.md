@@ -1,6 +1,6 @@
 ---
 kind: skill
-id: chat-channel
+id: escurel-chat-channel
 description: Which escurel group a shared chat (a Teams group chat or channel)
   acts as when a chat bridge answers in it. Without a mapping the bridge
   declines to answer there.
@@ -14,7 +14,7 @@ acl:
   delete: [admin]
 ---
 
-# chat-channel — who a shared chat acts as
+# escurel-chat-channel — who a shared chat acts as
 
 A system skill, shipped into every tenant. Only `escurel:admin` may create,
 change, delete or read a mapping; the gateway refuses everyone else whatever

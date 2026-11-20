@@ -15,8 +15,8 @@ describe('Map Teams conversation', () => {
       conversationId: ' 19:abc@thread.v2 ',
       group: 'sales',
     });
-    expect(page.pageId).toMatch(/^markdown\/instances\/chat-channel\/teams-[0-9a-f]{8}\.md$/);
-    expect(page.content).toContain('skill: chat-channel\n');
+    expect(page.pageId).toMatch(/^markdown\/instances\/escurel-chat-channel\/teams-[0-9a-f]{8}\.md$/);
+    expect(page.content).toContain('skill: escurel-chat-channel\n');
     expect(page.content).toContain('channel: msteams\n');
     expect(page.content).toContain('conversation_id: "19:abc@thread.v2"\n');
     expect(page.content).toContain('group: "sales"\n');
@@ -83,23 +83,23 @@ describe('Map Teams conversation', () => {
 
     const existing = [
       {
-        page_id: 'markdown/instances/chat-channel/hand-written.md',
+        page_id: 'markdown/instances/escurel-chat-channel/hand-written.md',
         frontmatter: { channel: 'msteams', conversation_id: '19:abc@thread.v2', group: 'sales' },
       },
       {
-        page_id: 'markdown/instances/chat-channel/deals.md',
+        page_id: 'markdown/instances/escurel-chat-channel/deals.md',
         frontmatter: { channel: 'msteams', team_id: 't', channel_id: 'c', group: 'sales' },
       },
     ];
     const remap = { kind: 'group' as const, conversationId: ' 19:abc@thread.v2 ', group: 'ops' };
     expect(mappingsOfTarget(remap, existing).map((m) => m.page_id)).toEqual([
-      'markdown/instances/chat-channel/hand-written.md',
+      'markdown/instances/escurel-chat-channel/hand-written.md',
     ]);
     expect(
       mappingsOfTarget({ kind: 'channel', teamId: 't', channelId: 'c', group: 'x' }, existing).map(
         (m) => m.page_id,
       ),
-    ).toEqual(['markdown/instances/chat-channel/deals.md']);
+    ).toEqual(['markdown/instances/escurel-chat-channel/deals.md']);
     expect(
       mappingsOfTarget({ kind: 'group', conversationId: '19:other', group: 'x' }, existing),
     ).toEqual([]);

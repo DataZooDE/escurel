@@ -638,12 +638,12 @@ test('Usage asks for an admin, and Agents lists the profiles runs execute as', a
   await stack.call(
     'update_page',
     {
-      page_id: 'markdown/instances/agent/scribe.md',
+      page_id: 'markdown/instances/escurel-agent/scribe.md',
       base_sha256: '',
       content: [
         '---',
         'kind: instance',
-        'skill: agent',
+        'skill: escurel-agent',
         'id: scribe',
         'harness: echo',
         'skills: ["[[skill::supplier-risk]]"]',

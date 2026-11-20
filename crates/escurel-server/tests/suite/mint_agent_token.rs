@@ -38,7 +38,7 @@ const VAULT_PAGE: &str = "markdown/instances/vault/v1.md";
 
 /// An agent profile confined to notes: a token minted for it must not be able to shed that scope by
 /// minting a workbench child (crew review PR-1, F1).
-const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\n\
+const SCRIBE: &str = "---\nkind: instance\nskill: escurel-agent\nid: scribe\n\
     scopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# scribe\n";
 
 async fn start(signing: bool) -> EscurelProcess {
@@ -56,7 +56,7 @@ async fn start(signing: bool) -> EscurelProcess {
                 .skill("vault", VAULT_SKILL)
                 .instance("renewal", "c1", PAGE_BODY)
                 .instance("vault", "v1", VAULT_PAGE_BODY)
-                .instance("agent", "scribe", SCRIBE)
+                .instance("escurel-agent", "scribe", SCRIBE)
                 .done(),
         ),
     })

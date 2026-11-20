@@ -79,7 +79,7 @@ suite('runtimes against the real stack', () => {
     // The echo harness reports a version; a member's read may leave it out (admins only).
     assert.match(row.description, /^online · echo( [^·]+)? · repo:escurel, site:vsx · /);
     assert.match(row.tooltip, /^Online: last seen /m);
-    assert.equal(row.pageId, 'markdown/instances/runtime/vsx-controls.md');
+    assert.equal(row.pageId, 'markdown/instances/escurel-runtime/vsx-controls.md');
     assert.match(api.runtimes.message ?? '', /^\d+ of \d+ online$/);
   });
 
@@ -98,7 +98,7 @@ suite('runtimes against the real stack', () => {
       const runId = (await runStarted(api, trigger.event_id)).run_id!;
       const live = await liveView(api, runId, (v) => v.status === 'running' && !!v.heldBy);
       assert.equal(live.heldBy?.runtime, RUNNER, JSON.stringify(live.heldBy));
-      assert.equal(live.heldBy?.pageId, 'markdown/instances/runtime/vsx-controls.md');
+      assert.equal(live.heldBy?.pageId, 'markdown/instances/escurel-runtime/vsx-controls.md');
       assert.ok(Date.parse(live.heldBy!.until) > Date.now() - 60_000);
       // The lease is released when the run assigns its event: a finished run names no holder.
       const done = await liveView(api, runId, (v) => v.status !== 'running');

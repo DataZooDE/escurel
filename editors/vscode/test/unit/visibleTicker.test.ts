@@ -31,7 +31,7 @@ describe('VisibleTicker', () => {
   it('turns an online runner stale on the next tick, without a reload', () => {
     const base: Runtime = {
       runner_id: 'laptop',
-      page_id: 'markdown/instances/runtime/laptop.md',
+      page_id: 'markdown/instances/escurel-runtime/laptop.md',
       harnesses: [{ name: 'echo' }],
       labels: [],
       max_concurrent: 1,

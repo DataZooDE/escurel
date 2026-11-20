@@ -515,27 +515,28 @@ async fn system_skills_install_once_and_keep_a_tenants_own_page() {
         .into_iter()
         .map(|s| s.id)
         .collect();
-    assert!(ids.iter().any(|i| i == "agent"), "{ids:?}");
+    assert!(ids.iter().any(|i| i == "escurel-agent"), "{ids:?}");
     assert!(ids.iter().any(|i| i == "escurel"), "{ids:?}");
 
-    const OWN: &str = "---\nkind: skill\nid: agent\ndescription: ours\n\
+    const OWN: &str = "---\nkind: skill\nid: escurel-agent\ndescription: ours\n\
         acl:\n  create: [public]\n  update: [public]\n---\n# our agents\n";
     let own = fresh_harness();
-    seed(&own, &[("markdown/skills/agent.md", OWN)]).await;
+    seed(&own, &[("markdown/skills/escurel-agent.md", OWN)]).await;
     own.indexer.ensure_system_skills().await.unwrap();
     assert_eq!(
         own.indexer
-            .read_page_markdown("markdown/skills/agent.md")
+            .read_page_markdown("markdown/skills/escurel-agent.md")
             .await
             .unwrap()
             .as_deref(),
         Some(OWN),
         "the tenant's own agent page must not be replaced"
     );
-    let incoming: Value = serde_json::json!({ "kind": "instance", "skill": "agent", "id": "x" });
+    let incoming: Value =
+        serde_json::json!({ "kind": "instance", "skill": "escurel-agent", "id": "x" });
     let allowed = own
         .indexer
-        .may_write_instance(&member(ALICE), "agent", None, &incoming)
+        .may_write_instance(&member(ALICE), "escurel-agent", None, &incoming)
         .await
         .unwrap();
     assert!(
@@ -547,12 +548,12 @@ async fn system_skills_install_once_and_keep_a_tenants_own_page() {
 /// The `agent` page as v2026.11.13 shipped it, byte for byte.
 const AGENT_PAGE_V2026_11_13: &str = include_str!("../fixtures/agent_skill_v2026.11.13.md");
 
-/// A tenant installed before a system skill changed keeps the OLD shipped page
-/// (installs skip existing pages). One still byte-equal to an earlier shipped
-/// version is upgraded to the current one (#829: `token_epoch` joins the agent
-/// keys); one the tenant edited is kept, as before.
+/// A tenant installed before the ids were namespaced holds the OLD shipped
+/// page at `markdown/skills/agent.md`. One still byte-equal to a version
+/// escurel shipped there is moved to `escurel-agent` (the current markdown);
+/// one the tenant edited is the tenant's own `agent` skill and is kept as it is.
 #[tokio::test]
-async fn an_unedited_earlier_shipped_system_skill_page_is_upgraded_and_an_edited_one_kept() {
+async fn an_unedited_earlier_shipped_agent_page_is_migrated_and_an_edited_one_kept() {
     let old = fresh_harness();
     seed(
         &old,
@@ -560,17 +561,24 @@ async fn an_unedited_earlier_shipped_system_skill_page_is_upgraded_and_an_edited
     )
     .await;
     old.indexer.ensure_system_skills().await.unwrap();
+    assert_eq!(
+        old.indexer
+            .read_page_markdown("markdown/skills/agent.md")
+            .await
+            .unwrap(),
+        None,
+        "the old shipped page is moved"
+    );
     let now = old
         .indexer
-        .read_page_markdown("markdown/skills/agent.md")
+        .read_page_markdown("markdown/skills/escurel-agent.md")
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(
-        now, AGENT_PAGE_V2026_11_13,
-        "the old shipped page is replaced"
+    assert!(
+        now.contains("id: escurel-agent\n") && now.contains("token_epoch"),
+        "{now}"
     );
-    assert!(now.contains("token_epoch"), "{now}");
 
     let edited: &'static str = Box::leak(
         AGENT_PAGE_V2026_11_13

@@ -309,7 +309,7 @@ fn render_page_inverts_split_frontmatter() {
 
 #[test]
 fn set_frontmatter_scalar_changes_only_that_line() {
-    let input = "---\nkind: instance\n# who runs this\nskill: agent\nid: scribe\n\
+    let input = "---\nkind: instance\n# who runs this\nskill: escurel-agent\nid: scribe\n\
                  skills: [\"[[skill::note]]\"]   # keep\nscopes:\n  write: ['a/*']\n---\n# scribe\n\nBody.\n";
     let added = escurel_md::set_frontmatter_scalar(input, "token_epoch", "100").expect("add");
     assert_eq!(

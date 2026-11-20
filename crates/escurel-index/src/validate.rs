@@ -1510,7 +1510,7 @@ pub(crate) struct SkillContract {
 }
 
 impl Indexer {
-    /// A skill page's `agent: "[[agent::x]]"` default (#823): malformed is an
+    /// A skill page's `agent: "[[escurel-agent::x]]"` default (#823): malformed is an
     /// error (the runner would refuse every run of the skill); an agent that
     /// does not exist, or does not list this skill, is a warning — the agent
     /// may be created after the skill, but until then its runs are refused.
@@ -1523,14 +1523,14 @@ impl Indexer {
             return Ok(Vec::new());
         };
         let json = serde_json::to_value(raw).unwrap_or_default();
-        let Some(agent) = escurel_types::agent_profile::link_id(Some(&json), "agent") else {
+        let Some(agent) = escurel_types::agent_profile::agent_link_id(Some(&json)) else {
             return Ok(vec![
                 Issue::error(
                     "agent_invalid",
                     "frontmatter.agent",
-                    "`agent:` names the default agent as one `[[agent::<id>]]` link",
+                    "`agent:` names the default agent as one `[[escurel-agent::<id>]]` link",
                 )
-                .with_suggestion("write `agent: \"[[agent::researcher]]\"`"),
+                .with_suggestion("write `agent: \"[[escurel-agent::researcher]]\"`"),
             ]);
         };
         let skill = fields.get("id").and_then(YamlValue::as_str).unwrap_or("");
@@ -1762,6 +1762,10 @@ impl Indexer {
                     skill.as_str()
                 });
             }
+        }
+        // A legacy `[[agent::x]]` may name an agent profile (see the wikilink check below).
+        if wanted.contains(escurel_types::agent_profile::LEGACY_AGENT_SKILL) {
+            wanted.insert(escurel_types::agent_profile::AGENT_SKILL);
         }
         // `skills[slug]` present  => skill exists, value is its
         // required_frontmatter list; absent => not an indexed skill.
@@ -2006,6 +2010,15 @@ impl Indexer {
                     // through the real write path.
                     let (missing, named) = if skill == "skill" {
                         (!skills.contains_key(id.as_str()), id)
+                    } else if skill == escurel_types::agent_profile::LEGACY_AGENT_SKILL
+                        && !skills.contains_key(skill.as_str())
+                    {
+                        // `[[agent::x]]` from before the ids were namespaced: on a tenant
+                        // without a skill of its own called `agent` it names an agent profile.
+                        (
+                            !skills.contains_key(escurel_types::agent_profile::AGENT_SKILL),
+                            skill,
+                        )
                     } else {
                         (!skills.contains_key(skill.as_str()), skill)
                     };

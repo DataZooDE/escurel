@@ -6,6 +6,16 @@
 //! of [`SYSTEM_SKILLS`], installed by [`crate::Indexer::ensure_system_skills`]
 //! at indexer open.
 //!
+//! **Ids are namespaced** (v2026.11.21): every shipped skill except the
+//! `escurel` meta-skill is `escurel-<name>` (`escurel-agent`,
+//! `escurel-runtime`, `escurel-chat-channel`), so the `escurel-` prefix is
+//! reserved for escurel. Before that they were `agent`, `runtime` and
+//! `chat-channel`, which collided with tenants' own skills of those names: a
+//! portfolio's `agent` skill became admin-write-only because escurel's was.
+//! [`SystemSkill::legacy`] names the old location and every byte version
+//! escurel shipped there, so boot can move a page escurel wrote — and only
+//! such a page — to the new id ([`crate::Indexer::ensure_system_skills`]).
+//!
 //! A row marked [`SystemSkill::admin_only`] is authority, not documentation:
 //! its page and its instances are writable by the admin role alone, enforced
 //! by the write ACL ([`crate::Indexer::may_write_page`]) independently of the
@@ -28,6 +38,21 @@ pub struct SystemSkill {
     /// it is upgraded to [`Self::markdown`]; any other page is the tenant's own
     /// and is kept. Add the outgoing hash here whenever the markdown changes.
     pub previous_sha256: &'static [&'static str],
+    /// Where an earlier release kept this skill under its un-namespaced id.
+    pub legacy: Option<LegacySystemSkill>,
+}
+
+/// The pre-namespacing location of a system skill.
+#[derive(Debug, Clone, Copy)]
+pub struct LegacySystemSkill {
+    /// The old skill id (`agent`).
+    pub id: &'static str,
+    /// The old skill page (`markdown/skills/agent.md`).
+    pub page_id: &'static str,
+    /// SHA-256 (hex) of every markdown escurel shipped at `page_id`. A page
+    /// byte-equal to one of them is escurel's and is migrated; any other page
+    /// at that id is the tenant's own skill and is never touched.
+    pub shipped_sha256: &'static [&'static str],
 }
 
 /// Skill id of agent profiles (#823): the one the agent-profile parser keys on.
@@ -43,28 +68,47 @@ pub const SYSTEM_SKILLS: &[SystemSkill] = &[
         // by the meta-skill rules instead.
         admin_only: false,
         previous_sha256: &[],
+        legacy: None,
     },
     SystemSkill {
         id: AGENT_SKILL_ID,
-        page_id: "markdown/skills/agent.md",
+        page_id: "markdown/skills/escurel-agent.md",
         markdown: include_str!("agent_skill.md"),
         admin_only: true,
-        // v2026.11.13 (before `token_epoch`, #829).
-        previous_sha256: &["e7b9e157096c11d4e30f0a28e3e12b414d726457fee4407bd7aec7937f072f98"],
+        previous_sha256: &[],
+        legacy: Some(LegacySystemSkill {
+            id: escurel_types::agent_profile::LEGACY_AGENT_SKILL,
+            page_id: "markdown/skills/agent.md",
+            // v2026.11.13 (before `token_epoch`, #829), v2026.11.14 to v2026.11.20.
+            shipped_sha256: &[
+                "e7b9e157096c11d4e30f0a28e3e12b414d726457fee4407bd7aec7937f072f98",
+                "8724ca9653c9fd77cd03cef1ef8a44f57d1a3c8a40aa70a57cc8a9fd8f453e38",
+            ],
+        }),
     },
     SystemSkill {
         id: escurel_types::runtime::RUNTIME_SKILL,
-        page_id: "markdown/skills/runtime.md",
+        page_id: "markdown/skills/escurel-runtime.md",
         markdown: include_str!("runtime_skill.md"),
         admin_only: true,
         previous_sha256: &[],
+        legacy: Some(LegacySystemSkill {
+            id: escurel_types::runtime::LEGACY_RUNTIME_SKILL,
+            page_id: "markdown/skills/runtime.md",
+            shipped_sha256: &["3acb10fa0d516e3b72d0f3598b228cbde8437722ea7c8e21251e3c05744776a1"],
+        }),
     },
     SystemSkill {
         id: escurel_types::chat_channel::CHAT_CHANNEL_SKILL,
-        page_id: "markdown/skills/chat-channel.md",
+        page_id: "markdown/skills/escurel-chat-channel.md",
         markdown: include_str!("chat_channel_skill.md"),
         admin_only: true,
         previous_sha256: &[],
+        legacy: Some(LegacySystemSkill {
+            id: escurel_types::chat_channel::LEGACY_CHAT_CHANNEL_SKILL,
+            page_id: "markdown/skills/chat-channel.md",
+            shipped_sha256: &["6b84c5cccd186a5c589a681cfacf39a9e2cbda3073760b7c49bc36490d15d049"],
+        }),
     },
 ];
 
@@ -140,29 +184,60 @@ mod tests {
     }
 
     #[test]
-    fn only_the_agent_runtime_and_chat_channel_skills_are_admin_only() {
-        assert!(is_admin_only_skill("agent"));
-        assert!(is_admin_only_skill("runtime"));
-        assert!(is_admin_only_skill("chat-channel"));
-        assert!(is_admin_only_path("markdown/instances/runtime/laptop.md"));
+    fn only_the_namespaced_agent_runtime_and_chat_channel_skills_are_admin_only() {
+        assert!(is_admin_only_skill("escurel-agent"));
+        assert!(is_admin_only_skill("escurel-runtime"));
+        assert!(is_admin_only_skill("escurel-chat-channel"));
+        assert!(is_admin_only_path(
+            "markdown/instances/escurel-runtime/laptop.md"
+        ));
         assert!(!is_admin_only_skill("escurel"));
         assert!(!is_admin_only_skill("note"));
-        assert!(is_admin_only_skill_page("markdown/skills/agent.md"));
+        assert!(is_admin_only_skill_page("markdown/skills/escurel-agent.md"));
         assert!(!is_admin_only_skill_page("markdown/skills/escurel.md"));
+        // A tenant's own skills of the old names are ordinary skills.
+        for legacy in ["agent", "runtime", "chat-channel"] {
+            assert!(!is_admin_only_skill(legacy), "{legacy}");
+            assert!(!is_admin_only_path(&format!(
+                "markdown/instances/{legacy}/x.md"
+            )));
+            assert!(!is_admin_only_skill_page(&format!(
+                "markdown/skills/{legacy}.md"
+            )));
+        }
+    }
+
+    #[test]
+    fn every_legacy_hash_is_not_the_current_markdown() {
+        use sha2::{Digest, Sha256};
+        for row in SYSTEM_SKILLS {
+            if let Some(legacy) = row.legacy {
+                let now = format!("{:x}", Sha256::digest(row.markdown.as_bytes()));
+                assert!(!legacy.shipped_sha256.contains(&now.as_str()), "{}", row.id);
+                assert_ne!(legacy.page_id, row.page_id);
+            }
+        }
     }
 
     #[test]
     fn an_admin_only_write_is_named_by_path_or_by_claim() {
         let note = "---\nkind: instance\nskill: note\nid: n\n---\n";
         assert!(!is_admin_only_write("markdown/instances/note/n.md", note));
-        assert!(is_admin_only_write("markdown/instances/agent/n.md", note));
-        assert!(is_admin_only_write("markdown/skills/agent.md", "garbage"));
-        let claims_agent = "---\nkind: instance\nskill: agent\nid: n\n---\n";
+        assert!(is_admin_only_write(
+            "markdown/instances/escurel-agent/n.md",
+            note
+        ));
+        assert!(!is_admin_only_write("markdown/instances/agent/n.md", note));
+        assert!(is_admin_only_write(
+            "markdown/skills/escurel-agent.md",
+            "garbage"
+        ));
+        let claims_agent = "---\nkind: instance\nskill: escurel-agent\nid: n\n---\n";
         assert!(is_admin_only_write(
             "markdown/instances/note/n.md",
             claims_agent
         ));
-        let skill_claims_agent = "---\nkind: skill\nid: agent\n---\n";
+        let skill_claims_agent = "---\nkind: skill\nid: escurel-agent\n---\n";
         assert!(is_admin_only_write(
             "markdown/skills/other.md",
             skill_claims_agent

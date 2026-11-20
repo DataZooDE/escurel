@@ -799,7 +799,7 @@ mod tests {
             4,
         );
         let parsed = escurel_md_free_yaml(&page);
-        assert_eq!(parsed["skill"], "runtime");
+        assert_eq!(parsed["skill"], "escurel-runtime");
         assert_eq!(parsed["id"], "laptop-42");
         assert_eq!(parsed["runner_id"], "laptop:42");
         assert_eq!(parsed["labels"], json!(["site:muc"]));

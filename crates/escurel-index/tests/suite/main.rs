@@ -70,6 +70,7 @@ mod seed_events;
 mod sql_bindings;
 mod sql_view_backend;
 mod sql_view_postgres;
+mod system_skill_seeding;
 mod two_pass;
 mod validate;
 mod write_acl;

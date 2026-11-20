@@ -5,7 +5,7 @@
  */
 
 /** The admin-only system skill a mapping is an instance of. */
-export const CHAT_CHANNEL_SKILL = 'chat-channel';
+export const CHAT_CHANNEL_SKILL = 'escurel-chat-channel';
 
 export type MappingInput =
   | { kind: 'group'; conversationId: string; group: string; title?: string }
@@ -59,7 +59,7 @@ function targetKey(input: MappingInput): string {
 }
 
 /**
- * The page for `input`: `markdown/instances/chat-channel/teams-<hash of the target>.md`. Keyed on
+ * The page for `input`: `markdown/instances/escurel-chat-channel/teams-<hash of the target>.md`. Keyed on
  * the conversation (or team + channel) alone, never the group: remapping a chat to another group
  * rewrites its one page instead of adding a second one the gateway would refuse as ambiguous.
  */

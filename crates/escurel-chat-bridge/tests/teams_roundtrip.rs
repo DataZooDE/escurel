@@ -1158,8 +1158,8 @@ async fn map_chat(gw: &EscurelProcess, id: &str, target: &str, group: &str) {
         gw,
         &admin,
         "update_page",
-        json!({ "page_id": format!("markdown/instances/chat-channel/{id}.md"),
-                "content": format!("---\nkind: instance\nskill: chat-channel\nid: {id}\n\
+        json!({ "page_id": format!("markdown/instances/escurel-chat-channel/{id}.md"),
+                "content": format!("---\nkind: instance\nskill: escurel-chat-channel\nid: {id}\n\
                     channel: msteams\n{target}\ngroup: {group}\n---\n# {id}\n") }),
     )
     .await;

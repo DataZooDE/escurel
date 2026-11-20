@@ -685,9 +685,9 @@ A runner **outside the cluster** needs no signing key: references/08
 An ordinary event run (not a workflow step, not a chat turn) may run as an
 **agent profile** (references/01, *Agent profiles*). The runner picks it:
 
-1. the event's `provenance.agent: "[[agent::x]]"`, when `x` lists the run's
+1. the event's `provenance.agent: "[[escurel-agent::x]]"`, when `x` lists the run's
    skill (otherwise the request is ignored, logged);
-2. else the skill page's `agent: "[[agent::x]]"` default — when that agent
+2. else the skill page's `agent: "[[escurel-agent::x]]"` default — when that agent
    is missing or does not list the skill the run is **refused** (a permanent
    failure, `dead_letter`, `run-finished.error` naming the agent), never run
    with the runner's own token in its place;
@@ -737,10 +737,10 @@ goes wrong.
    `ESCUREL_RUNNER_HARNESS_ALLOW` and its model in `ESCUREL_RUNNER_MODEL_ALLOW`
    (docs/deploy/env.md); outside them the run is refused, not substituted.
 2. **The agent page, as an admin** (only `escurel:admin` may write one):
-   `markdown/instances/agent/digest-bot.md` with `harness: claude`,
+   `markdown/instances/escurel-agent/digest-bot.md` with `harness: claude`,
    `model: <id>`, `skills: ["[[skill::digest]]"]`, and the narrowest
    `scopes.tools` / `scopes.write` that do the job (references/01).
-3. **The skill page.** `agent: "[[agent::digest-bot]]"`, an `acl:` that
+3. **The skill page.** `agent: "[[escurel-agent::digest-bot]]"`, an `acl:` that
    grants `create` / `update` to the groups the run writes as (the run's
    token carries the skill's write groups — not admin), and
    `schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"` with

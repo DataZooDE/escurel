@@ -6,7 +6,7 @@ import { heldBy, requiresWords, runtimeRows } from '../../src/views/runtimesMode
 // the runner's own status record.
 const online: Runtime = {
   runner_id: 'laptop',
-  page_id: 'markdown/instances/runtime/laptop.md',
+  page_id: 'markdown/instances/escurel-runtime/laptop.md',
   harnesses: [
     { name: 'echo', version: null },
     { name: 'claude', version: '2.1.3 (Claude Code)' },
@@ -24,7 +24,7 @@ const online: Runtime = {
 const stale: Runtime = {
   ...online,
   runner_id: 'build-box',
-  page_id: 'markdown/instances/runtime/build-box.md',
+  page_id: 'markdown/instances/escurel-runtime/build-box.md',
   harnesses: [{ name: 'codex', version: 'codex-cli 0.168.0' }],
   labels: [],
   max_concurrent: null,
@@ -57,7 +57,7 @@ describe('the Runtimes view rows', () => {
     );
     expect(laptop?.tooltip).toContain('At most 2 runs at once');
     expect(laptop?.tooltip).toContain('Runner 2026.11.13');
-    expect(laptop?.tooltip).toContain('Page: markdown/instances/runtime/laptop.md');
+    expect(laptop?.tooltip).toContain('Page: markdown/instances/escurel-runtime/laptop.md');
     expect(box?.tooltip).toContain(
       'Stale: last seen 20 min ago (stale after 1 min 30 s of silence). No recent status report; the runner may be unavailable.',
     );

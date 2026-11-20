@@ -11,8 +11,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Skill id of runtime registrations: `markdown/instances/runtime/<slug>.md`.
-pub const RUNTIME_SKILL: &str = "runtime";
+/// Skill id of runtime registrations: `markdown/instances/escurel-runtime/<slug>.md`.
+/// Namespaced (`escurel-`) so a tenant's own `runtime` skill is not escurel's.
+pub const RUNTIME_SKILL: &str = "escurel-runtime";
+
+/// The id runtime registrations had before v2026.11.21.
+pub const LEGACY_RUNTIME_SKILL: &str = "runtime";
 
 /// A label is a short token such as `site:muc` or `has:sap-gui`.
 pub const MAX_LABEL_LEN: usize = 64;
@@ -381,7 +385,7 @@ mod tests {
         assert_eq!(runtime_slug("::"), "runner");
         assert_eq!(
             runtime_page_id("B"),
-            "markdown/instances/runtime/b.md".to_owned()
+            "markdown/instances/escurel-runtime/b.md".to_owned()
         );
     }
 }

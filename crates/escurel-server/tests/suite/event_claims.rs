@@ -289,8 +289,8 @@ async fn requires_is_validated_on_skills_and_events() {
 async fn runtimes_are_admin_written_and_read_with_liveness() {
     let p = gateway().await;
     let token = admin(&p);
-    let page = "markdown/instances/runtime/laptop.md";
-    let content = "---\nkind: instance\nskill: runtime\nid: laptop\nrunner_id: \"laptop\"\n\
+    let page = "markdown/instances/escurel-runtime/laptop.md";
+    let content = "---\nkind: instance\nskill: escurel-runtime\nid: laptop\nrunner_id: \"laptop\"\n\
         harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}, {\"name\": \"codex\", \
         \"version\": null, \"available\": false, \"probe_error\": \"codex: not found\"}]\n\
         labels: [\"site:muc\"]\nmax_concurrent: 2\nclaim_holder: \"runner:laptop#01abc\"\n\
@@ -557,14 +557,14 @@ async fn a_runner_role_keeps_its_books_and_nothing_more() {
                 "body": json!({ "version": "1" }).to_string() }),
     )
     .await;
-    let runtime = "---\nkind: instance\nskill: runtime\nid: hq\nrunner_id: \"hq\"\n\
+    let runtime = "---\nkind: instance\nskill: escurel-runtime\nid: hq\nrunner_id: \"hq\"\n\
         harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}]\n\
         claim_holder: \"runner:hq#l1\"\n---\n# hq\n";
     call(
         &p,
         &runner,
         "update_page",
-        json!({ "page_id": "markdown/instances/runtime/hq.md", "content": runtime }),
+        json!({ "page_id": "markdown/instances/escurel-runtime/hq.md", "content": runtime }),
     )
     .await;
     let rt = call(&p, &runner, "list_runtimes", json!({})).await["runtimes"][0].clone();
@@ -592,8 +592,8 @@ async fn a_runner_role_keeps_its_books_and_nothing_more() {
         &p,
         &runner,
         "update_page",
-        json!({ "page_id": "markdown/instances/runtime/x.md",
-                "content": "---\nkind: instance\nskill: agent\nid: x\n---\n# x\n" }),
+        json!({ "page_id": "markdown/instances/escurel-runtime/x.md",
+                "content": "---\nkind: instance\nskill: escurel-agent\nid: x\n---\n# x\n" }),
     )
     .await;
     assert!(
@@ -646,7 +646,7 @@ async fn a_runner_writes_only_its_own_runtime_page() {
     let laptop = p.mint_token_with_groups(TENANT, "runner:laptop", &["escurel:runner"], false);
     let page = |id: &str, note: &str| {
         format!(
-            "---\nkind: instance\nskill: runtime\nid: {id}\nrunner_id: \"{id}\"\n\
+            "---\nkind: instance\nskill: escurel-runtime\nid: {id}\nrunner_id: \"{id}\"\n\
              harnesses: [{{\"name\": \"echo\"}}]\n---\n# {id}\n\n{note}\n"
         )
     };
@@ -657,7 +657,7 @@ async fn a_runner_writes_only_its_own_runtime_page() {
                 p,
                 &token,
                 "update_page",
-                json!({ "page_id": format!("markdown/instances/runtime/{id}.md"),
+                json!({ "page_id": format!("markdown/instances/escurel-runtime/{id}.md"),
                         "content": page(id, note) }),
             )
             .await
