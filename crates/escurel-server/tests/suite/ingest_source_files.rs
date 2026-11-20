@@ -606,15 +606,15 @@ async fn an_agents_write_scope_bounds_ingest_upload() {
     for (id, page) in [
         (
             "notes-only",
-            "---\nkind: instance\nskill: agent\nid: notes-only\nscopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# notes-only\n",
+            "---\nkind: instance\nskill: escurel-agent\nid: notes-only\nscopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# notes-only\n",
         ),
         (
             "unscoped",
-            "---\nkind: instance\nskill: agent\nid: unscoped\n---\n# unscoped\n",
+            "---\nkind: instance\nskill: escurel-agent\nid: unscoped\n---\n# unscoped\n",
         ),
     ] {
         s.indexer
-            .update_page(&format!("markdown/instances/agent/{id}.md"), page)
+            .update_page(&format!("markdown/instances/escurel-agent/{id}.md"), page)
             .await
             .unwrap();
     }

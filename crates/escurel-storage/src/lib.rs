@@ -78,6 +78,27 @@ pub trait LaneStore: Send + Sync + 'static {
     /// return the new content's [`Version`].
     async fn write(&self, key: &Key, body: Bytes) -> Result<Version>;
 
+    /// Write `body` at `key` only when nothing is there: `Ok(true)` when this
+    /// call created it, `Ok(false)` when a value already existed (and is left
+    /// as it is). For a seed that must never produce a second copy.
+    ///
+    /// The default reads, then writes: that never rewrites an existing value,
+    /// but two processes racing on one absent key can both write. On a backend
+    /// whose write replaces by key (S3, GCS) the race still leaves one object;
+    /// on Google Drive, where a name can be held by two files, it does not, so
+    /// the default is a narrowing, not a guarantee. [`crate::fs::FsStore`] makes
+    /// it atomic.
+    async fn create_if_absent(&self, key: &Key, body: Bytes) -> Result<bool> {
+        match self.read(key).await {
+            Ok(_) => Ok(false),
+            Err(StoreError::NotFound(_)) => {
+                self.write(key, body).await?;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Enumerate keys under `prefix` in unspecified order.
     /// Returns an empty vec if the prefix has no values.
     async fn list(&self, prefix: &Key) -> Result<Vec<Key>>;

@@ -242,7 +242,7 @@ async fn multiple_processes_run_in_parallel_with_independent_data() {
         b_skills
             .skills
             .iter()
-            .all(|s| matches!(s.id.as_str(), "escurel" | "agent" | "runtime")),
+            .all(|s| s.id == "escurel" || s.id.starts_with("escurel-")),
         "b carries only the system skills: {b_skills:?}"
     );
 

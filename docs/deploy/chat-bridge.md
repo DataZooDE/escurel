@@ -437,10 +437,10 @@ external guests in the chat — whenever a member asks. Map a chat only to a gro
 everyone in it may see.
 
 ```sh
-escurel page update markdown/instances/chat-channel/sales-chat.md <<'MD'
+escurel page update markdown/instances/escurel-chat-channel/sales-chat.md <<'MD'
 ---
 kind: instance
-skill: chat-channel
+skill: escurel-chat-channel
 id: sales-chat
 channel: msteams
 conversation_id: "19:…@thread.v2"      # or: team_id: "19:…@thread.tacv2" + channel_id: "19:…@thread.tacv2"

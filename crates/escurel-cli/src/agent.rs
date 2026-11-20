@@ -467,7 +467,7 @@ pub enum AgentTokenCmd {
     /// (`issue_agent_token`, admin). The token is printed once: store it where
     /// the harness reads it.
     Issue {
-        /// The agent profile id (`markdown/instances/agent/<agent>.md`).
+        /// The agent profile id (`markdown/instances/escurel-agent/<agent>.md`).
         agent: String,
         /// Token life: seconds, or a number with `h` / `d` (`12h`, `30d`).
         /// Default 30d, at most 90d.

@@ -12,8 +12,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Skill id of the mapping pages: `markdown/instances/chat-channel/<id>.md`.
-pub const CHAT_CHANNEL_SKILL: &str = "chat-channel";
+/// Skill id of the mapping pages: `markdown/instances/escurel-chat-channel/<id>.md`.
+/// Namespaced (`escurel-`) so a tenant's own `chat-channel` skill is not escurel's.
+pub const CHAT_CHANNEL_SKILL: &str = "escurel-chat-channel";
+
+/// The id the mapping pages had before v2026.11.21.
+pub const LEGACY_CHAT_CHANNEL_SKILL: &str = "chat-channel";
 
 /// The subject prefix of a group principal: `group:<g>`.
 pub const GROUP_SUBJECT_PREFIX: &str = "group:";

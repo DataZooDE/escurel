@@ -42,12 +42,12 @@ const ORPHAN: &str = "---\nkind: skill\nid: orphan\nautonomy: auto\nagent: \"[[a
 /// skill nothing of the agent's.
 const STRAY: &str = "---\nkind: skill\nid: stray\nautonomy: auto\nagent: \"[[agent::reader]]\"\n\
     acl:\n  create: [ops]\n  update: [ops]\n---\n# stray\n\nFold the event into the instance.\n";
-const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\n\
+const SCRIBE: &str = "---\nkind: instance\nskill: escurel-agent\nid: scribe\nharness: echo\n\
     skills: [\"[[skill::customer]]\", \"[[skill::note]]\", \"[[skill::memo]]\"]\n\
     scopes:\n  write: [\"markdown/instances/note/*\", \"markdown/instances/memo/*\"]\n\
     max_concurrent: 1\n---\n# scribe\n";
 /// A reader: may expand, may not search.
-const READER: &str = "---\nkind: instance\nskill: agent\nid: reader\n\
+const READER: &str = "---\nkind: instance\nskill: escurel-agent\nid: reader\n\
     skills: [\"[[skill::note]]\"]\nscopes:\n  tools: [expand, whoami, update_page]\n---\n# reader\n";
 
 struct ChildGuard(Child);
@@ -106,8 +106,8 @@ async fn gateway() -> EscurelProcess {
                 .instance("memo", "c1", instance_body("memo").as_str())
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
-                .instance("agent", "scribe", SCRIBE)
-                .instance("agent", "reader", READER)
+                .instance("escurel-agent", "scribe", SCRIBE)
+                .instance("escurel-agent", "reader", READER)
                 .done(),
         ),
     })
@@ -345,7 +345,7 @@ async fn an_agents_tool_scope_refuses_what_it_does_not_list() {
         &gw,
         &token,
         "update_page",
-        json!({ "page_id": "markdown/instances/agent/reader.md", "content": widened }),
+        json!({ "page_id": "markdown/instances/escurel-agent/reader.md", "content": widened }),
     )
     .await;
     assert_eq!(
@@ -495,7 +495,7 @@ async fn recovery_resolves_the_agent_a_fresh_run_would() {
 /// visibly, instead of running uncapped. `max_concurrent: 0` used to read as "no cap".
 #[tokio::test]
 async fn an_agent_with_a_malformed_max_concurrent_is_refused_not_run_uncapped() {
-    const LOOSE: &str = "---\nkind: instance\nskill: agent\nid: loose\nharness: echo\n\
+    const LOOSE: &str = "---\nkind: instance\nskill: escurel-agent\nid: loose\nharness: echo\n\
         skills: [\"[[skill::capless]]\"]\nmax_concurrent: 0\n---\n# loose\n";
     const CAPLESS: &str = "---\nkind: skill\nid: capless\nautonomy: auto\n\
         agent: \"[[agent::loose]]\"\nacl:\n  create: [ops]\n  update: [ops]\n---\n\
@@ -511,7 +511,7 @@ async fn an_agent_with_a_malformed_max_concurrent_is_refused_not_run_uncapped() 
                 .tenant(TENANT)
                 .skill("capless", CAPLESS)
                 .instance("capless", "c1", instance_body("capless").as_str())
-                .instance("agent", "loose", LOOSE)
+                .instance("escurel-agent", "loose", LOOSE)
                 .done(),
         ),
     })

@@ -974,7 +974,7 @@ impl Indexer {
     /// write per page (on a Google Drive lane ~1.5 s each) and turns a transient store error into a
     /// failed boot. Everything else (meta-skill guard, parse, embed, the index transaction, the mutation
     /// epoch) is identical.
-    async fn update_page_inner(
+    pub(crate) async fn update_page_inner(
         &self,
         page_id: &str,
         content: &str,
@@ -1830,20 +1830,32 @@ impl Indexer {
 
     /// Idempotently install every skill escurel ships
     /// ([`crate::system_skills::SYSTEM_SKILLS`]): the `escurel` meta-skill
-    /// (`docs/contract/agent-interface.md` locked decision 3) and the `agent`
-    /// profile skill (#823). Called at indexer open (binary boot and the test
-    /// harness) so every *served* tenant exposes them.
+    /// (`docs/contract/agent-interface.md` locked decision 3) and the
+    /// `escurel-agent`, `escurel-runtime` and `escurel-chat-channel` skills.
+    /// Called at indexer open (binary boot and the test harness) so every
+    /// *served* tenant exposes them.
     ///
     /// A row is skipped when the tenant already has a skill page with that
     /// id — operators may ship their own extended meta-skill, and re-opening
     /// an existing tenant must not clobber it. A tenant-authored page for an
-    /// admin-only system skill is kept too, but logged: its instances stay
-    /// admin-write-only whatever its own `acl:` says
-    /// ([`crate::system_skills::is_admin_only_skill`]), so keeping it changes
-    /// its prose, never who may write an agent.
+    /// admin-only system skill is kept too, but logged.
+    ///
+    /// **Exactly one copy.** The decision is taken against the LANE, not only
+    /// the index (which may not hold the page yet on a boot that rebuilds), and
+    /// the page is created with [`escurel_storage::LaneStore::create_if_absent`]
+    /// and then indexed without a second lane write. Writing it twice — once
+    /// directly, once through the ordinary write path — is how a Google Drive
+    /// lane ended up with two `markdown/skills/agent.md` files three seconds
+    /// apart (heron-escurel, v2026.11.17), on which every later boot failed.
+    ///
+    /// **Migration from the un-namespaced ids** (before v2026.11.21): see
+    /// [`Self::migrate_legacy_system_skill`].
     pub async fn ensure_system_skills(&self) -> Result<(), IndexerError> {
         let mut installed = false;
         for row in crate::system_skills::SYSTEM_SKILLS {
+            if let Some(legacy) = row.legacy {
+                installed |= self.migrate_legacy_system_skill(row, &legacy).await?;
+            }
             // `optional()`, not `ok()`: a DuckDB error must not read as "no page", or the shipped
             // page would be written over a tenant's own.
             let existing: Option<String> = {
@@ -1862,17 +1874,13 @@ impl Indexer {
                     None
                 };
                 // Still byte-equal to an earlier shipped version: nobody edited it, so it gets the
-                // current one (a tenant edit is theirs and is kept).
+                // current one (a tenant edit is theirs and is kept). One write: the ordinary path.
                 if let Some(stored) = stored.as_deref()
                     && stored != row.markdown
                     && row
                         .previous_sha256
                         .contains(&format!("{:x}", Sha256::digest(stored.as_bytes())).as_str())
                 {
-                    let key = Key::new(self.tenant.as_str(), row.page_id.to_owned())?;
-                    self.store
-                        .write(&key, Bytes::from_static(row.markdown.as_bytes()))
-                        .await?;
                     self.update_page(row.page_id, row.markdown).await?;
                     tracing::info!(
                         tenant = %self.tenant.as_str(),
@@ -1882,31 +1890,145 @@ impl Indexer {
                     installed = true;
                     continue;
                 }
-                if row.admin_only {
-                    let canonical = stored.as_deref() == Some(row.markdown);
-                    if !canonical {
-                        tracing::warn!(
-                            tenant = %self.tenant.as_str(),
-                            skill = row.id,
-                            %page_id,
-                            "the tenant carries its own page for a system skill; it is kept, and \
-                             its instances stay admin-write-only"
-                        );
-                    }
+                if row.admin_only && stored.as_deref() != Some(row.markdown) {
+                    tracing::warn!(
+                        tenant = %self.tenant.as_str(),
+                        skill = row.id,
+                        %page_id,
+                        "the tenant carries its own page for a system skill; it is kept, and \
+                         its instances stay admin-write-only"
+                    );
                 }
                 continue;
             }
+            // Not indexed. The lane decides: create it only if nothing is there (another gateway,
+            // or this one before a restart, may have written it), then index what the lane holds.
             let key = Key::new(self.tenant.as_str(), row.page_id.to_owned())?;
-            self.store
-                .write(&key, Bytes::from_static(row.markdown.as_bytes()))
+            let created = self
+                .store
+                .create_if_absent(&key, Bytes::from_static(row.markdown.as_bytes()))
                 .await?;
-            self.update_page(row.page_id, row.markdown).await?;
+            let content = if created {
+                row.markdown.to_owned()
+            } else {
+                let bytes = self.store.read(&key).await?;
+                String::from_utf8(bytes.to_vec()).map_err(|_| IndexerError::NotUtf8 {
+                    page_id: row.page_id.to_owned(),
+                })?
+            };
+            self.update_page_inner(row.page_id, &content, None, false)
+                .await?;
             installed = true;
         }
         if installed {
             // Make the new blocks searchable (FTS has no incremental refresh).
             self.refresh_fts().await?;
         }
+        Ok(())
+    }
+
+    /// Move a system skill that an earlier release installed under its
+    /// un-namespaced id (`markdown/skills/agent.md`) to its namespaced one,
+    /// with its instances. Only a page escurel wrote is touched: the legacy
+    /// page must be byte-equal to a version escurel shipped there
+    /// ([`crate::system_skills::LegacySystemSkill::shipped_sha256`]). Any
+    /// other page under that id is the tenant's own skill (a portfolio's
+    /// `agent`), and it and its instances are left exactly as they are.
+    ///
+    /// Each legacy instance (`markdown/instances/agent/x.md`, `skill: agent`)
+    /// is written to `markdown/instances/escurel-agent/x.md` with its `skill:`
+    /// rewritten in place, then removed. A target that already exists wins
+    /// (a re-run after a crash). Read from the lane, not the index, so it
+    /// works on the boot that is still building the index. Re-runnable: the
+    /// legacy skill page is removed last, so an interrupted migration
+    /// resumes. Returns whether anything changed.
+    pub(crate) async fn migrate_legacy_system_skill(
+        &self,
+        row: &crate::system_skills::SystemSkill,
+        legacy: &crate::system_skills::LegacySystemSkill,
+    ) -> Result<bool, IndexerError> {
+        let legacy_key = Key::new(self.tenant.as_str(), legacy.page_id.to_owned())?;
+        let stored = match self.store.read(&legacy_key).await {
+            Ok(bytes) => bytes,
+            Err(escurel_storage::StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let hash = format!("{:x}", Sha256::digest(&stored));
+        if !legacy.shipped_sha256.contains(&hash.as_str()) {
+            tracing::info!(
+                tenant = %self.tenant.as_str(),
+                page_id = legacy.page_id,
+                "a tenant skill carries the id escurel's system skill had before it was \
+                 namespaced; it is the tenant's and is left as it is"
+            );
+            return Ok(false);
+        }
+        let prefix = format!("markdown/instances/{}/", legacy.id);
+        let mut moved = 0usize;
+        for key in self
+            .store
+            .list(&Key::new(self.tenant.as_str(), prefix.clone())?)
+            .await?
+        {
+            let Some(rest) = key.path().strip_prefix(&prefix) else {
+                continue;
+            };
+            let bytes = self.store.read(&key).await?;
+            let Ok(content) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let declares_legacy = escurel_md::parse(content).is_ok_and(|p| {
+                p.frontmatter
+                    .fields
+                    .get("skill")
+                    .and_then(escurel_md::YamlValue::as_str)
+                    == Some(legacy.id)
+            });
+            if !declares_legacy {
+                continue;
+            }
+            let target = format!("markdown/instances/{}/{rest}", row.id);
+            let rewritten = escurel_md::set_frontmatter_scalar(content, "skill", row.id)?;
+            let target_key = Key::new(self.tenant.as_str(), target.clone())?;
+            let created = self
+                .store
+                .create_if_absent(&target_key, Bytes::from(rewritten.clone()))
+                .await?;
+            if created {
+                self.update_page_inner(&target, &rewritten, None, false)
+                    .await?;
+            }
+            self.forget_page(&key).await?;
+            moved += 1;
+        }
+        self.forget_page(&legacy_key).await?;
+        tracing::warn!(
+            tenant = %self.tenant.as_str(),
+            from = legacy.page_id,
+            to = row.page_id,
+            instances = moved,
+            "migrated a system skill to its namespaced id"
+        );
+        Ok(true)
+    }
+
+    /// Remove a page from the lane and the index outright (no archived husk):
+    /// for a page escurel itself wrote and is moving. Absent is fine.
+    async fn forget_page(&self, key: &Key) -> Result<(), IndexerError> {
+        match self.store.delete(key).await {
+            Ok(()) | Err(escurel_storage::StoreError::NotFound(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let page_id = key.path();
+        {
+            let mut conn = self.conn.lock().await;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
+            tx.commit()?;
+        }
+        self.bump_mutation_epoch();
         Ok(())
     }
 

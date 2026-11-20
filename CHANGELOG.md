@@ -6,7 +6,43 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## Unreleased — BREAKING (system skills are namespaced: `escurel-agent`, `escurel-runtime`, `escurel-chat-channel`)
+
+The system skills escurel ships were `agent`, `runtime` and `chat-channel`. Those are names tenants use for
+their own skills, and the admin-only rule followed the name: a portfolio's own `agent` skill and everything under
+`markdown/instances/agent/` became admin-write-only. They are now `escurel-agent`, `escurel-runtime` and
+`escurel-chat-channel`; the `escurel-` prefix is reserved for escurel. A tenant's own `agent`, `runtime` or
+`chat-channel` skill is an ordinary skill again.
+
+**Upgrade checklist:**
+1. Nothing to do for the pages themselves. On boot, a legacy `markdown/skills/agent.md` (`runtime.md`,
+   `chat-channel.md`) that is byte-equal to a version escurel shipped is escurel's: it is removed and its
+   instances move to `markdown/instances/escurel-agent/` (`escurel-runtime/`, `escurel-chat-channel/`) with
+   `skill:` rewritten in place; the namespaced skill page is installed. The log line is "migrated a system skill
+   to its namespaced id". A legacy page with any other content is the tenant's own skill and is never touched
+   ("a tenant skill carries the id …"). If you had EDITED escurel's agent page, it stays as a tenant skill
+   called `agent`: move its profiles by hand (rename to `markdown/instances/escurel-agent/<id>.md`, set
+   `skill: escurel-agent`) and delete the page.
+2. Upgrade runners and the gateway together: a runner registers under `escurel-runtime`, and an older runner's
+   `runtime` page is no longer the runner's to write. The VS Code extension (agents view, "Map Teams
+   conversation…") moves with this release.
+3. A skill's `agent: "[[agent::x]]"` binding keeps working (that key only names agent profiles; it is read as
+   `[[escurel-agent::x]]`, also by `validate` on a tenant without its own `agent` skill). Write the new form
+   in new pages.
+
+Fixed:
+- **A system skill is seeded once.** The seed wrote each system page twice: once directly, once through the
+  ordinary write path. On a Google Drive lane the second write could create a second file with the same name
+  (heron-escurel, 2026-11-18: two identical `markdown/skills/agent.md` three seconds apart), and every later
+  boot failed with "is ambiguous: 2 files share that name". The seed now decides against the lane, creates with
+  the new `LaneStore::create_if_absent` (atomic on the filesystem store: hard link; read-then-write elsewhere,
+  where S3 and GCS replace by key anyway) and indexes without a second write. Repeated boots on fresh indexes
+  and two gateways seeding one lane at once store one copy (tested).
+- **A Drive lane tolerates identical duplicates.** Reading a name that two or more Drive files share, all with
+  the same bytes, returns those bytes and warns instead of failing; writing it first removes all but one (lowest
+  file id); deleting it removes all. Duplicates with different bytes stay an error (which one is the page is not
+  escurel's to guess). This lets heron-escurel boot without a manual clean-up of its duplicate `agent.md`.
+
 
 Fixed:
 - **`search` no longer scans every `sql_view` source on every call.** The SQL lane matched `q` with

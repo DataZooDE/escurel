@@ -124,8 +124,8 @@ Agent tokens are served on `/mcp` only — `/ws`, `/ingest` and `/blob`
 refuse them (`403`, `error: agent_scope_denied`), since only `/mcp` applies
 the scopes. Agent pages themselves are admin-write-only (references/01) **in every
 `ESCUREL_WRITE_ACL` mode**: `off` and `log` relax the ordinary write ACL for a
-rollout, but a write that touches the `agent` system skill — its skill page,
-a page claiming it, anything under `markdown/instances/agent/` — is always
+rollout, but a write that touches the `escurel-agent` system skill — its skill page,
+a page claiming it, anything under `markdown/instances/escurel-agent/` — is always
 enforced (fail closed), on every write path (update, delete, move, drafts,
 sessions).
 
@@ -206,7 +206,7 @@ through Teams. Its actor is `bridge:<channel>`, so what it captures reads `captu
 carries) — all server-stamped; a caller's own `captured_groups` / `asked_by` are removed.
 
 **Group principal.** A Teams group chat or channel never acts as one member. An admin maps it to
-an escurel group with a page of the admin-only `chat-channel` system skill (references/01); the
+an escurel group with a page of the admin-only `escurel-chat-channel` system skill (references/01); the
 turn then acts as `group:<g>` (`roles: [<g>]`, the asker as `act.sub`, stamped `asked_by` on its
 captures), and only for a sender who is a member of `<g>` per the directories
 (`chat_channel_not_member` otherwise). The conversation page and its chat group belong to
@@ -464,7 +464,7 @@ The refusal is a JSON-RPC error `-32003` with `data: {code:
 "authority_keys_need_admin", keys: [...]}` and a message naming the keys.
 It follows `ESCUREL_WRITE_ACL`: `enforce` refuses, `log` logs the would-be
 refusal and allows, `off` keeps the ungated behaviour. The `agent` and
-`runtime` system skills stay admin-only in every mode (references/01).
+`escurel-runtime` system skills stay admin-only in every mode (references/01).
 
 ## In tests: `AuthMode`
 

@@ -66,6 +66,9 @@ impl FsStore {
     }
 }
 
+/// Distinguishes this process's concurrent `create_if_absent` temporaries.
+static CREATE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[async_trait]
 impl LaneStore for FsStore {
     async fn read(&self, key: &Key) -> Result<Bytes> {
@@ -106,6 +109,33 @@ impl LaneStore for FsStore {
         let meta = tfs::metadata(&path).await?;
         let version = format_version(meta.modified()?);
         Ok(version)
+    }
+
+    /// Atomic: the body goes to a temporary file unique to this call, which is
+    /// then hard-linked to the key. `link` fails when the key exists, so of two
+    /// racing creators exactly one wins and nobody overwrites anybody.
+    async fn create_if_absent(&self, key: &Key, body: Bytes) -> Result<bool> {
+        let path = self.resolve(key);
+        if let Some(parent) = path.parent() {
+            tfs::create_dir_all(parent).await?;
+        }
+        let unique = format!(
+            // Ends in `.md.tmp` so a crash leftover is swept like any other half write.
+            ".{}-{}.md.tmp",
+            std::process::id(),
+            CREATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(unique);
+        let tmp = std::path::PathBuf::from(tmp);
+        tfs::write(&tmp, &body).await?;
+        let linked = tfs::hard_link(&tmp, &path).await;
+        let _ = tfs::remove_file(&tmp).await;
+        match linked {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(StoreError::Io(e)),
+        }
     }
 
     async fn list(&self, prefix: &Key) -> Result<Vec<Key>> {

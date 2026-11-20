@@ -1040,20 +1040,20 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
         &[
             SKILL_MEETING,
             (
-                "markdown/instances/agent/scribe.md",
-                "---\nkind: instance\nskill: agent\nid: scribe\nskills: [\"[[skill::meeting]]\"]\n---\n# scribe\n",
+                "markdown/instances/escurel-agent/scribe.md",
+                "---\nkind: instance\nskill: escurel-agent\nid: scribe\nskills: [\"[[skill::meeting]]\"]\n---\n# scribe\n",
             ),
         ],
     )
     .await;
 
-    let clean = "---\nkind: instance\nskill: agent\nid: a\nharness: echo\nmodel: m\n\
+    let clean = "---\nkind: instance\nskill: escurel-agent\nid: a\nharness: echo\nmodel: m\n\
         skills: [\"[[skill::meeting]]\", [[skill::customer]]]\n\
         scopes:\n  tools: [expand]\n  write: [\"markdown/instances/meeting/*\"]\n\
         max_concurrent: 2\ntoken_epoch: 1790000000\n---\n# a\n";
     let issues = h
         .indexer
-        .validate(Some("markdown/instances/agent/a.md"), clean)
+        .validate(Some("markdown/instances/escurel-agent/a.md"), clean)
         .await
         .unwrap();
     assert!(
@@ -1061,11 +1061,11 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
         "{issues:?}"
     );
 
-    let broken = "---\nkind: instance\nskill: agent\nid: b\nharness: nope\nmodel: \"\"\n\
+    let broken = "---\nkind: instance\nskill: escurel-agent\nid: b\nharness: nope\nmodel: \"\"\n\
         skills: meeting\nscopes:\n  tools: search\n  read: [x]\nmax_concurrent: 0\ntoken_epoch: soon\n---\n# b\n";
     let issues = h
         .indexer
-        .validate(Some("markdown/instances/agent/b.md"), broken)
+        .validate(Some("markdown/instances/escurel-agent/b.md"), broken)
         .await
         .unwrap();
     let got = codes(&issues);
@@ -1139,11 +1139,12 @@ async fn every_runner_harness_is_a_known_harness() {
             !codes(&issues).contains(&"harness_unknown"),
             "skill harness {name}: {issues:?}"
         );
-        let agent =
-            format!("---\nkind: instance\nskill: agent\nid: a\nharness: {name}\n---\n# a\n");
+        let agent = format!(
+            "---\nkind: instance\nskill: escurel-agent\nid: a\nharness: {name}\n---\n# a\n"
+        );
         let issues = h
             .indexer
-            .validate(Some("markdown/instances/agent/a.md"), &agent)
+            .validate(Some("markdown/instances/escurel-agent/a.md"), &agent)
             .await
             .unwrap();
         assert!(
@@ -1161,12 +1162,12 @@ async fn an_agents_scopes_name_known_tools_and_bounded_globs() {
     let h = fresh_harness();
     h.indexer.ensure_system_skills().await.unwrap();
     let page = |scopes: &str| {
-        format!("---\nkind: instance\nskill: agent\nid: a\nscopes:\n{scopes}---\n# a\n")
+        format!("---\nkind: instance\nskill: escurel-agent\nid: a\nscopes:\n{scopes}---\n# a\n")
     };
     let grade = |content: String| {
         let ix = &h.indexer;
         async move {
-            ix.validate(Some("markdown/instances/agent/a.md"), &content)
+            ix.validate(Some("markdown/instances/escurel-agent/a.md"), &content)
                 .await
                 .unwrap()
         }

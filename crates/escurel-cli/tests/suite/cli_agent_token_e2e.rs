@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 const TENANT: &str = "acme";
 const NOTE: &str = "---\nkind: skill\nid: note\ndescription: n\n\
     acl:\n  create: [ops]\n  update: [ops]\n---\n# note\n";
-const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\n\
+const SCRIBE: &str = "---\nkind: instance\nskill: escurel-agent\nid: scribe\n\
     skills: [\"[[skill::note]]\"]\n\
     scopes:\n  tools: [whoami, expand]\n  write: [\"markdown/instances/note/*\"]\n\
     ---\n# scribe\n\nTakes notes.\n";
@@ -28,7 +28,7 @@ async fn gateway() -> EscurelProcess {
             FixtureBuilder::new()
                 .tenant(TENANT)
                 .skill("note", NOTE)
-                .instance("agent", "scribe", SCRIBE)
+                .instance("escurel-agent", "scribe", SCRIBE)
                 .done(),
         ),
     })
@@ -93,7 +93,11 @@ async fn an_admin_issues_and_revokes_an_external_agents_token() {
     let (ok, page) = cli(
         &p,
         &admin,
-        &["page", "expand", "markdown/instances/agent/scribe.md"],
+        &[
+            "page",
+            "expand",
+            "markdown/instances/escurel-agent/scribe.md",
+        ],
     )
     .await;
     assert!(ok, "{page}");
@@ -121,7 +125,7 @@ async fn an_admin_issues_and_revokes_an_external_agents_token() {
         .header("authorization", format!("Bearer {admin}"))
         .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "update_page",
-            "arguments": { "page_id": "markdown/instances/agent/scribe.md", "content": content } } }))
+            "arguments": { "page_id": "markdown/instances/escurel-agent/scribe.md", "content": content } } }))
         .send()
         .await
         .unwrap()
@@ -135,7 +139,11 @@ async fn an_admin_issues_and_revokes_an_external_agents_token() {
     let (ok, page) = cli(
         &p,
         &admin,
-        &["page", "expand", "markdown/instances/agent/scribe.md"],
+        &[
+            "page",
+            "expand",
+            "markdown/instances/escurel-agent/scribe.md",
+        ],
     )
     .await;
     assert!(ok, "{page}");

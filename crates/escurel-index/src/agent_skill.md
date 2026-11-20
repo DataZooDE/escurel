@@ -1,6 +1,6 @@
 ---
 kind: skill
-id: agent
+id: escurel-agent
 description: An agent profile — the identity, harness, model and least-privilege
   scopes a runner's per-run token carries when it runs one of the listed skills.
 required_frontmatter: []
@@ -13,7 +13,7 @@ acl:
   delete: [admin]
 ---
 
-# agent — who runs a skill, and with what authority
+# escurel-agent — who runs a skill, and with what authority
 
 A system skill, shipped into every tenant. Only `escurel:admin` may create,
 change or delete an agent page; the gateway refuses everyone else whatever
@@ -47,8 +47,8 @@ so it is never something a run (or an ordinary member) can widen.
 
 ## Choosing an agent for a run
 
-1. An event's `provenance.agent: "[[agent::x]]"`, if `x` lists the skill.
-2. Else the skill page's own `agent: "[[agent::x]]"` default.
+1. An event's `provenance.agent: "[[escurel-agent::x]]"`, if `x` lists the skill.
+2. Else the skill page's own `agent: "[[escurel-agent::x]]"` default.
 3. Else no agent: the run keeps the runner's usual per-run token.
 
 A skill whose default agent is missing, or does not list it, does not

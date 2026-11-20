@@ -53,7 +53,7 @@ void main() {
         _RuntimesClient(const [
           RuntimeInfo(
             runnerId: 'build-box',
-            pageId: 'markdown/instances/runtime/build-box.md',
+            pageId: 'markdown/instances/escurel-runtime/build-box.md',
             status: 'stale',
             harnesses: [
               RuntimeHarness(name: 'codex', version: 'codex-cli 0.168.0'),
@@ -63,7 +63,7 @@ void main() {
           ),
           RuntimeInfo(
             runnerId: 'laptop',
-            pageId: 'markdown/instances/runtime/laptop.md',
+            pageId: 'markdown/instances/escurel-runtime/laptop.md',
             status: 'online',
             harnesses: [
               RuntimeHarness(name: 'echo'),
@@ -106,7 +106,7 @@ void main() {
       _RuntimesClient(const [
         RuntimeInfo(
           runnerId: 'laptop',
-          pageId: 'markdown/instances/runtime/laptop.md',
+          pageId: 'markdown/instances/escurel-runtime/laptop.md',
           status: 'online',
           harnesses: [
             RuntimeHarness(name: 'echo', version: '1.0'),
@@ -137,7 +137,7 @@ void main() {
       _RuntimesClient(const [
         RuntimeInfo(
           runnerId: 'laptop',
-          pageId: 'markdown/instances/runtime/laptop.md',
+          pageId: 'markdown/instances/escurel-runtime/laptop.md',
           status: 'stopped',
           harnesses: [
             RuntimeHarness(name: 'echo'),

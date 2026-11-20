@@ -539,19 +539,31 @@ promoting a draft of one) needs `escurel:admin` or a group in
 `ESCUREL_SKILL_ADMIN_GROUPS`; proposing a draft stays open (references/08 §
 Who may write a skill page).
 
-### System skills: `escurel`, `agent`, `runtime` and `chat-channel`
+### System skills: `escurel`, `escurel-agent`, `escurel-runtime` and `escurel-chat-channel`
 
 The meta-skill is one of the **system skills** every served tenant gets at
-boot (`Indexer::ensure_system_skills`); the others are **`agent`** — agent
-profiles (§Agent profiles below) —, **`runtime`** — runner registrations
-(§Runtimes below) — and **`chat-channel`** — shared-chat mappings (§Chat
+boot (`Indexer::ensure_system_skills`); the others are **`escurel-agent`** — agent
+profiles (§Agent profiles below) —, **`escurel-runtime`** — runner registrations
+(§Runtimes below) — and **`escurel-chat-channel`** — shared-chat mappings (§Chat
 channels below). Each is installed only when the tenant has
-no skill page with that id, so a tenant's own page is never clobbered (a
-tenant-authored `agent` page is kept and logged). `list_skills` therefore
+no skill page with that id, so a tenant's own page is never clobbered. `list_skills` therefore
 always shows all four — count them when you assert on a fresh tenant's catalogue.
 
-`agent`, `runtime` and `chat-channel` are **admin-only authority** (said here for `agent`; the others are the same): its skill page, any skill page claiming
-`id: agent`, and every page under `markdown/instances/agent/` are writable by
+**The `escurel-` prefix is reserved for escurel** (v2026.11.21). Before that the
+three were `agent`, `runtime` and `chat-channel`, which made a tenant's own skill
+of that name (a portfolio's `agent`) admin-write-only. A tenant skill called
+`agent`, `runtime` or `chat-channel` is now an ordinary skill. On boot, a legacy
+`markdown/skills/agent.md` (or `runtime.md`, `chat-channel.md`) that is
+byte-equal to a version escurel shipped is moved to the namespaced id together
+with its instances (`skill:` rewritten); any other page with that id is the
+tenant's and is never touched. A skill's `agent:` binding may still say
+`[[agent::x]]`: that key only names agent profiles, so it reads as
+`[[escurel-agent::x]]`. The system pages are seeded once: created only if the
+lane holds nothing at that id (`LaneStore::create_if_absent`), then indexed
+without a second write.
+
+`escurel-agent`, `escurel-runtime` and `escurel-chat-channel` are **admin-only authority** (said here for `escurel-agent`; the others are the same): its skill page, any skill page claiming
+`id: escurel-agent`, and every page under `markdown/instances/escurel-agent/` are writable by
 `escurel:admin` alone — in every `ESCUREL_WRITE_ACL` mode, `off` and `log`
 included. That is enforced by the write ACL independently of
 the page's own `acl:` block, so neither a widened `acl_defaults`, nor an
@@ -560,14 +572,14 @@ members (`instance_acl: false` on the shipped page, too).
 
 ### Agent profiles: `agent` instances and a skill's `agent:` default
 
-An **agent profile** (#823) is an instance of the `agent` system skill — the
+An **agent profile** (#823) is an instance of the `escurel-agent` system skill — the
 identity, harness and least-privilege scopes a run executes under, separate
 from the skill whose body is the run's instructions:
 
 ```yaml
-# markdown/instances/agent/scribe.md   (admin-written only)
+# markdown/instances/escurel-agent/scribe.md   (admin-written only)
 kind: instance
-skill: agent
+skill: escurel-agent
 id: scribe
 harness: claude                    # within ESCUREL_RUNNER_HARNESS_ALLOW
 model: claude-sonnet-4             # within ESCUREL_RUNNER_MODEL_ALLOW
@@ -587,9 +599,9 @@ unknown name (`serach`) as `agent_scopes_invalid` rather than letting it
 mint an agent refused everything. Scopes only ever **narrow**: the skill's
 own `acl:` grants and the token's skill confinement still apply.
 
-A skill names its default agent with **`agent: "[[agent::scribe]]"`** (quote
+A skill names its default agent with **`agent: "[[escurel-agent::scribe]]"`** (quote
 it; an unquoted `[[…]]` is accepted too). An event may ask for one with
-`provenance.agent: "[[agent::x]]"` — honoured only when that agent lists the
+`provenance.agent: "[[escurel-agent::x]]"` — honoured only when that agent lists the
 event's skill, else the skill's default applies. A skill whose default agent
 is missing or does not list it is **refused**, never run with a broader token.
 
@@ -615,13 +627,13 @@ How the token and the gateway enforce it: references/08.
 ### Runtimes: `runtime` instances (written by runners)
 
 Every `escurel-runner` registers itself (#818) as
-`markdown/instances/runtime/<runner-id-slug>.md`, on boot and again whenever
+`markdown/instances/escurel-runtime/<runner-id-slug>.md`, on boot and again whenever
 its probe of the harness CLIs reads a different version
 (`ESCUREL_RUNNER_PROBE_INTERVAL`, default 10m) — never per heartbeat:
 
 ```yaml
 kind: instance
-skill: runtime
+skill: escurel-runtime
 id: laptop-jr                       # slug of runner_id
 runner_id: "laptop-jr"              # ESCUREL_RUNNER_ID
 harnesses: [{"name": "echo", "version": "escurel-echo-harness 0.47.0"}, {"name": "codex", "version": null}]
@@ -648,7 +660,7 @@ group with one page per conversation (readable and writable by admins only):
 
 ```yaml
 kind: instance
-skill: chat-channel
+skill: escurel-chat-channel
 id: sales-chat
 channel: msteams
 conversation_id: "19:…@thread.v2"   # a group chat; OR team_id + channel_id (a channel, every thread)

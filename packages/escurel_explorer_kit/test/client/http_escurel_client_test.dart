@@ -426,7 +426,7 @@ void main() {
           'runtimes': [
             {
               'runner_id': 'laptop',
-              'page_id': 'markdown/instances/runtime/laptop.md',
+              'page_id': 'markdown/instances/escurel-runtime/laptop.md',
               'harnesses': [
                 {'name': 'claude', 'version': '2.1.3'},
               ],
@@ -442,7 +442,7 @@ void main() {
             },
             {
               'runner_id': 'box',
-              'page_id': 'markdown/instances/runtime/box.md',
+              'page_id': 'markdown/instances/escurel-runtime/box.md',
               'harnesses': [
                 {'name': 'codex', 'available': false},
               ],

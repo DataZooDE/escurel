@@ -9,8 +9,14 @@
 
 use serde_json::Value;
 
-/// Skill id of agent profile pages.
-pub const AGENT_SKILL: &str = "agent";
+/// Skill id of agent profile pages. Namespaced (`escurel-`), so a tenant's own
+/// `agent` skill and its `markdown/instances/agent/` are not escurel's.
+pub const AGENT_SKILL: &str = "escurel-agent";
+
+/// The id agent profiles had before v2026.11.21. A skill's `agent:` binding may
+/// still say `[[agent::x]]`: that key only ever names an agent profile, so the
+/// legacy namespace is read as [`AGENT_SKILL`] there ([`agent_link_id`]).
+pub const LEGACY_AGENT_SKILL: &str = "agent";
 
 /// The page an agent profile lives at.
 #[must_use]
@@ -158,10 +164,19 @@ pub fn link_ids(v: Option<&Value>, namespace: &str) -> Vec<String> {
 }
 
 /// The single id a one-link field names in `namespace`, e.g. a skill's
-/// `agent: "[[agent::x]]"`.
+/// `agent: "[[escurel-agent::x]]"`.
 #[must_use]
 pub fn link_id(v: Option<&Value>, namespace: &str) -> Option<String> {
     let mut ids = link_ids(v, namespace);
+    (ids.len() == 1).then(|| ids.remove(0))
+}
+
+/// The agent profile a skill's `agent:` binding (or an event's provenance)
+/// names: `[[escurel-agent::x]]`, or the legacy `[[agent::x]]`.
+#[must_use]
+pub fn agent_link_id(v: Option<&Value>) -> Option<String> {
+    let mut ids = link_ids(v, AGENT_SKILL);
+    ids.extend(link_ids(v, LEGACY_AGENT_SKILL));
     (ids.len() == 1).then(|| ids.remove(0))
 }
 
@@ -316,6 +331,20 @@ mod tests {
         );
         assert_eq!(link_id(Some(&json!("[[researcher]]")), "agent"), None);
         assert_eq!(link_id(Some(&json!("[[agent::../x]]")), "agent"), None);
+        // A skill's `agent:` binding reads the namespaced and the legacy spelling alike.
+        assert_eq!(
+            agent_link_id(Some(&json!("[[escurel-agent::researcher]]"))),
+            Some("researcher".to_owned())
+        );
+        assert_eq!(
+            agent_link_id(Some(&json!("[[agent::researcher]]"))),
+            Some("researcher".to_owned())
+        );
+        assert_eq!(agent_link_id(Some(&json!("[[note::researcher]]"))), None);
+        assert_eq!(
+            agent_page_id("researcher"),
+            "markdown/instances/escurel-agent/researcher.md"
+        );
     }
 
     #[test]

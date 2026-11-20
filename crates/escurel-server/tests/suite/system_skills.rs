@@ -12,13 +12,13 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const MEMBER: &str = "member:alice";
-const AGENT_PAGE: &str = "markdown/instances/agent/researcher.md";
-const AGENT_SKILL_PAGE: &str = "markdown/skills/agent.md";
-const RESEARCHER: &str = "---\nkind: instance\nskill: agent\nid: researcher\nharness: echo\n\
+const AGENT_PAGE: &str = "markdown/instances/escurel-agent/researcher.md";
+const AGENT_SKILL_PAGE: &str = "markdown/skills/escurel-agent.md";
+const RESEARCHER: &str = "---\nkind: instance\nskill: escurel-agent\nid: researcher\nharness: echo\n\
     skills: [\"[[skill::note]]\"]\nscopes:\n  write: [\"markdown/instances/note/*\"]\n---\n\
     # researcher\n";
 /// The agent skill page, rewritten by an admin to grant writes to everyone.
-const WIDENED_AGENT_SKILL: &str = "---\nkind: skill\nid: agent\ndescription: widened\n\
+const WIDENED_AGENT_SKILL: &str = "---\nkind: skill\nid: escurel-agent\ndescription: widened\n\
     acl:\n  create: [public]\n  update: [public]\n---\n# agent\n";
 const NOTE: &str = "---\nkind: skill\nid: note\ndescription: n\n\
     acl:\n  create: [public]\n  update: [public]\n---\n# note\n";
@@ -93,7 +93,10 @@ async fn a_fresh_tenant_lists_the_agent_skill() {
         .iter()
         .filter_map(|s| s["id"].as_str())
         .collect();
-    assert!(ids.contains(&"agent"), "agent skill shipped; got {ids:?}");
+    assert!(
+        ids.contains(&"escurel-agent"),
+        "agent skill shipped; got {ids:?}"
+    );
     assert!(
         ids.contains(&"escurel"),
         "meta-skill still shipped; got {ids:?}"
@@ -151,7 +154,7 @@ async fn a_member_cannot_move_a_page_into_the_agent_path() {
         &p,
         &member(&p),
         "move_page",
-        json!({ "from": "markdown/instances/note/n2.md", "to": "markdown/instances/agent/n2.md" }),
+        json!({ "from": "markdown/instances/note/n2.md", "to": "markdown/instances/escurel-agent/n2.md" }),
     )
     .await;
     assert_eq!(moved["ok"], false, "{moved}");
@@ -215,7 +218,7 @@ async fn the_agent_gate_holds_when_the_write_acl_is_off_or_log() {
             &p,
             &member(&p),
             "move_page",
-            json!({ "from": "markdown/instances/note/n9.md", "to": "markdown/instances/agent/n9.md" }),
+            json!({ "from": "markdown/instances/note/n9.md", "to": "markdown/instances/escurel-agent/n9.md" }),
         )
         .await;
         assert_eq!(
@@ -280,4 +283,105 @@ async fn a_move_is_gated_by_the_destination_skill() {
     )
     .await;
     assert_eq!(moved["ok"], true, "an admin may: {moved}");
+}
+
+/// A tenant's own `agent` skill (a portfolio's AI agents) is an ordinary skill since the system skills
+/// are namespaced (`escurel-agent`): a member writes the instances its ACL grants, and escurel's agent
+/// profiles stay admin-only beside it. Before, every page under `markdown/instances/agent/` was
+/// admin-write-only whatever the tenant's skill said.
+#[tokio::test]
+async fn a_tenants_own_agent_skill_is_governed_by_its_own_acl() {
+    const PORTFOLIO_AGENT: &str = "---\nkind: skill\nid: agent\ndescription: A portfolio AI agent.\n\
+        acl:\n  create: [public]\n  update: [public]\n---\n# agent\n";
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("agent", PORTFOLIO_AGENT)
+                .skill("note", NOTE)
+                .done(),
+        ),
+    })
+    .await;
+    let order_agent = "---\nkind: instance\nskill: agent\nid: order-agent\nname: Order agent\n---\n# Order agent\n";
+    let wrote = write(
+        &p,
+        &member(&p),
+        "markdown/instances/agent/order-agent.md",
+        order_agent,
+    )
+    .await;
+    assert_eq!(wrote["ok"], true, "{wrote}");
+    // escurel's own agent profiles are still an admin's.
+    let refused = write(
+        &p,
+        &member(&p),
+        "markdown/instances/escurel-agent/researcher.md",
+        RESEARCHER,
+    )
+    .await;
+    assert_ne!(refused["ok"], true, "{refused}");
+    let skills = call(&p, &admin(&p), "list_skills", json!({})).await;
+    let ids: Vec<&str> = skills["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"agent") && ids.contains(&"escurel-agent"),
+        "{ids:?}"
+    );
+    p.shutdown().await;
+}
+
+/// A skill bound to an agent with the pre-namespacing link `[[agent::x]]` still validates and names the
+/// `escurel-agent` profile on a tenant without a skill of its own called `agent`. (The boot migration of a
+/// legacy `markdown/skills/agent.md` is tested against a real lane in escurel-index
+/// `system_skill_seeding.rs`: this harness seeds fixtures after the gateway booted.)
+#[tokio::test]
+async fn a_legacy_agent_binding_still_names_the_namespaced_profile() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE)
+                .instance("escurel-agent", "researcher", RESEARCHER)
+                .done(),
+        ),
+    })
+    .await;
+    let admin = admin(&p);
+    for link in ["[[agent::researcher]]", "[[escurel-agent::researcher]]"] {
+        let bound =
+            format!("---\nkind: skill\nid: note\ndescription: n\nagent: \"{link}\"\n---\n# note\n");
+        let checked = call(
+            &p,
+            &admin,
+            "validate",
+            json!({ "page_id": "markdown/skills/note.md", "content": bound }),
+        )
+        .await;
+        let codes: Vec<&str> = checked["issues"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|i| i["code"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            !codes
+                .iter()
+                .any(|c| matches!(*c, "unknown_skill" | "agent_invalid" | "agent_unresolved")),
+            "{link}: {checked}"
+        );
+    }
+    p.shutdown().await;
 }

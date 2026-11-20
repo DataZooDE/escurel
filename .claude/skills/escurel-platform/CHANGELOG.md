@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.32.0 — namespaced system skills
+
+- **BREAKING:** the system skills are `escurel-agent`, `escurel-runtime` and `escurel-chat-channel`
+  (pages `markdown/skills/escurel-*.md`, instances `markdown/instances/escurel-*/`). The `escurel-` prefix is
+  reserved. A tenant skill called `agent`, `runtime` or `chat-channel` is ordinary. Boot migrates a legacy page
+  escurel wrote (byte-equal to a shipped version) with its instances; a tenant's own page is never touched.
+  `agent: "[[agent::x]]"` still binds a profile (references/01).
+- Fixtures: `.instance("escurel-agent", …)`; count four system skills (`escurel`, `escurel-agent`,
+  `escurel-runtime`, `escurel-chat-channel`) on a fresh tenant.
+- `LaneStore::create_if_absent` (atomic on `FsStore`).
+
 ## 0.31.0 — skill pages are written by administrators
 
 - **BREAKING:** writing a skill page and promoting a draft of one need `escurel:admin` or a group named in

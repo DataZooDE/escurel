@@ -34,7 +34,7 @@ fn skill(id: &str) -> String {
 const PAYROLL: &str = "---\nkind: skill\nid: payroll\nautonomy: auto\n\
     acl:\n  create: [finance]\n  update: [finance]\n---\n# payroll\n\nPay people.\n";
 
-const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\n\
+const SCRIBE: &str = "---\nkind: instance\nskill: escurel-agent\nid: scribe\nharness: echo\n\
     skills: [\"[[skill::customer]]\", \"[[skill::note]]\"]\n\
     scopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# scribe\n";
 
@@ -42,7 +42,7 @@ const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: ec
 /// Filing the event is the runner's bookkeeping, not the agent's tool call.
 const LEDGER: &str = "---\nkind: skill\nid: ledger\nautonomy: auto\nagent: \"[[agent::clerk]]\"\n\
     acl:\n  create: [ops]\n  update: [ops]\n---\n# ledger\n\nFold the event into the instance.\n";
-const CLERK: &str = "---\nkind: instance\nskill: agent\nid: clerk\nharness: echo\n\
+const CLERK: &str = "---\nkind: instance\nskill: escurel-agent\nid: clerk\nharness: echo\n\
     skills: [\"[[skill::ledger]]\"]\nscopes:\n  tools: [list_inbox, expand, whoami, update_page]\n---\n# clerk\n";
 
 fn instance_body(skill: &str) -> String {
@@ -86,12 +86,12 @@ async fn gateway_signing(signing: bool) -> EscurelProcess {
                 .skill("secret", SECRET)
                 .skill("ledger", LEDGER)
                 .instance("ledger", "c1", instance_body("ledger").as_str())
-                .instance("agent", "clerk", CLERK)
+                .instance("escurel-agent", "clerk", CLERK)
                 .instance("secret", "c1", instance_body("secret").as_str())
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
                 .instance("plain", "c1", instance_body("plain").as_str())
-                .instance("agent", "scribe", SCRIBE)
+                .instance("escurel-agent", "scribe", SCRIBE)
                 .done(),
         ),
     })

@@ -15,7 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 const _scribe = '''---
 kind: instance
-skill: agent
+skill: escurel-agent
 id: scribe
 harness: claude
 model: claude-sonnet-4
@@ -31,7 +31,7 @@ token_epoch: 1790071200
 
 const _janitor = '''---
 kind: instance
-skill: agent
+skill: escurel-agent
 id: janitor
 harness: echo
 ---

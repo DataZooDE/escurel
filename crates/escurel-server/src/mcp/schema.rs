@@ -1009,7 +1009,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "required": ["agent"],
                 "properties": {
-                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." },
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/escurel-agent/<agent>.md`)." },
                     "ttl_secs": { "type": "integer", "minimum": 3600, "maximum": 7776000, "description": "Token life; default 2592000 (30 days)." }
                 }
             }),
@@ -1030,7 +1030,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "type": "object",
                 "required": ["agent"],
                 "properties": {
-                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." }
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/escurel-agent/<agent>.md`)." }
                 }
             }),
         ),

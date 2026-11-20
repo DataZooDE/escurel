@@ -292,7 +292,7 @@ describe('<escurel-run-detail>', () => {
       ...liveSteerableRun,
       heldBy: {
         runtime: 'build-box',
-        pageId: 'markdown/instances/runtime/build-box.md',
+        pageId: 'markdown/instances/escurel-runtime/build-box.md',
         until: '2026-11-13T06:01:00Z',
       },
     });
@@ -304,7 +304,7 @@ describe('<escurel-run-detail>', () => {
     expect(text(line)).to.match(/^Taken by runtime build-box · lease until /);
     (q(el, '[data-testid="run-held-by"] button') as HTMLButtonElement).click();
     expect(sent).to.deep.equal([
-      { type: 'open-page', pageId: 'markdown/instances/runtime/build-box.md' },
+      { type: 'open-page', pageId: 'markdown/instances/escurel-runtime/build-box.md' },
     ]);
   });
 

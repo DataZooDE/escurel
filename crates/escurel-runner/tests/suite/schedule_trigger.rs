@@ -481,7 +481,7 @@ async fn a_scheduled_skill_runs_as_its_default_agent_under_a_minting_runner() {
     const DIGEST: &str = "---\nkind: skill\nid: digest\ndescription: Every two seconds, as bot.\n\
         autonomy: auto\nagent: \"[[agent::bot]]\"\nschedule: \"*/2 * * * * *\"\n\
         schedule_budget: {runs_per_day: 2}\n---\n# digest\n\nNote the time.\n";
-    const BOT: &str = "---\nkind: instance\nskill: agent\nid: bot\nharness: echo\n\
+    const BOT: &str = "---\nkind: instance\nskill: escurel-agent\nid: bot\nharness: echo\n\
         skills: [\"[[skill::digest]]\"]\n---\n# bot\n";
     let gw = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -489,7 +489,7 @@ async fn a_scheduled_skill_runs_as_its_default_agent_under_a_minting_runner() {
             FixtureBuilder::new()
                 .tenant(TENANT)
                 .skill("digest", DIGEST)
-                .instance("agent", "bot", BOT)
+                .instance("escurel-agent", "bot", BOT)
                 .done(),
         ),
         ..Default::default()

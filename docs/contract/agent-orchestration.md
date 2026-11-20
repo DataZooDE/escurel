@@ -54,7 +54,7 @@ The run's **authority** is now least privilege wherever an agent profile
 applies (#823). An `agent` instance page (admin-write-only system skill)
 names a harness, model, the skills it may run, `scopes.tools`,
 `scopes.write` page-id globs and `max_concurrent`; a skill names its default
-with `agent: "[[agent::x]]"` and an event may request one via
+with `agent: "[[escurel-agent::x]]"` and an event may request one via
 `provenance.agent` (honoured only when the agent lists the skill). With an
 agent the run's token is `sub: agent:<agent id>`, `roles: [escurel:agent,
 <the skill's write groups>]` — never `escurel:admin` — plus the `skill`

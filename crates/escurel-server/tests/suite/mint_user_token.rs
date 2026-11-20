@@ -152,8 +152,8 @@ async fn map_group_chat(p: &EscurelProcess, group: &str) {
         p,
         &admin,
         "update_page",
-        json!({ "page_id": "markdown/instances/chat-channel/sales-chat.md",
-                "content": format!("---\nkind: instance\nskill: chat-channel\nid: sales-chat\n\
+        json!({ "page_id": "markdown/instances/escurel-chat-channel/sales-chat.md",
+                "content": format!("---\nkind: instance\nskill: escurel-chat-channel\nid: sales-chat\n\
                     channel: msteams\nconversation_id: \"{GROUP_CHAT}\"\ngroup: {group}\n---\n# Sales chat\n") }),
     )
     .await;
@@ -388,8 +388,8 @@ async fn a_group_chat_acts_as_its_mapped_group_for_members_only() {
         p,
         &admin,
         "update_page",
-        json!({ "page_id": "markdown/instances/chat-channel/sales-chat.md",
-                "content": format!("---\nkind: instance\nskill: chat-channel\nid: sales-chat\n\
+        json!({ "page_id": "markdown/instances/escurel-chat-channel/sales-chat.md",
+                "content": format!("---\nkind: instance\nskill: escurel-chat-channel\nid: sales-chat\n\
                     channel: msteams\nconversation_id: \"{GROUP_CHAT}\"\ngroup: sales\narchived: true\n---\n") }),
     )
     .await;
@@ -499,9 +499,9 @@ async fn only_an_admin_maps_a_chat_and_a_mapping_must_say_one_thing() {
     let w = world().await;
     let p = &w.gw;
     let member = p.mint_token_with_groups(TENANT, "user:mallory", &["sales"], false);
-    let page = "markdown/instances/chat-channel/x.md";
+    let page = "markdown/instances/escurel-chat-channel/x.md";
     let good = format!(
-        "---\nkind: instance\nskill: chat-channel\nid: x\nchannel: msteams\n\
+        "---\nkind: instance\nskill: escurel-chat-channel\nid: x\nchannel: msteams\n\
          conversation_id: \"{GROUP_CHAT}\"\ngroup: sales\n---\n"
     );
     let (_, body) = call(
@@ -522,7 +522,7 @@ async fn only_an_admin_maps_a_chat_and_a_mapping_must_say_one_thing() {
         "group: sales\nteam_id: t\nchannel_id: c",
     ] {
         let content = format!(
-            "---\nkind: instance\nskill: chat-channel\nid: x\nchannel: msteams\n\
+            "---\nkind: instance\nskill: escurel-chat-channel\nid: x\nchannel: msteams\n\
              conversation_id: \"{GROUP_CHAT}\"\n{bad}\n---\n"
         );
         let (_, body) = call(
@@ -869,8 +869,8 @@ async fn ambiguous_unmappable_unprincipled_and_unsupported_mints_are_refused_by_
         p,
         &admin,
         "update_page",
-        json!({ "page_id": "markdown/instances/chat-channel/sales-chat-2.md",
-                "content": format!("---\nkind: instance\nskill: chat-channel\nid: sales-chat-2\n\
+        json!({ "page_id": "markdown/instances/escurel-chat-channel/sales-chat-2.md",
+                "content": format!("---\nkind: instance\nskill: escurel-chat-channel\nid: sales-chat-2\n\
                     channel: msteams\nconversation_id: \"{GROUP_CHAT}\"\ngroup: support\n---\n# again\n") }),
     )
     .await;

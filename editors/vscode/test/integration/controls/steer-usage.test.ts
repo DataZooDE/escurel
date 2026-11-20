@@ -181,12 +181,12 @@ suite('steering, transcript and usage against the real stack', () => {
     const back = signInAsAdmin(api);
     try {
       await api.services.client.updatePage({
-        page_id: 'markdown/instances/agent/vsx-scribe.md',
+        page_id: 'markdown/instances/escurel-agent/vsx-scribe.md',
         base_sha256: '',
         content: [
           '---',
           'kind: instance',
-          'skill: agent',
+          'skill: escurel-agent',
           'id: vsx-scribe',
           'harness: echo',
           'skills: ["[[skill::supplier-risk]]"]',
@@ -204,7 +204,7 @@ suite('steering, transcript and usage against the real stack', () => {
       assert.ok(row, JSON.stringify(api.agents.rows()));
       assert.equal(row.description, 'echo · no runs');
       assert.match(row.tooltip, /Tools: expand, create_draft/);
-      assert.equal(row.pageId, 'markdown/instances/agent/vsx-scribe.md');
+      assert.equal(row.pageId, 'markdown/instances/escurel-agent/vsx-scribe.md');
     } finally {
       back();
     }

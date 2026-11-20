@@ -6,12 +6,12 @@ import { agentProfile, agentRows, issueTokenError, tokensValidSince } from '../.
 // An agent profile is an instance of the `agent` system skill (references/01, "Agent profiles");
 // usage_report {group_by: [agent]} keys a run by `agent:<id>`.
 const scribe: Instance = {
-  page_id: 'markdown/instances/agent/scribe.md',
-  skill: 'agent',
+  page_id: 'markdown/instances/escurel-agent/scribe.md',
+  skill: 'escurel-agent',
   at: '2026-11-13T05:00:00Z',
   frontmatter: {
     kind: 'instance',
-    skill: 'agent',
+    skill: 'escurel-agent',
     id: 'scribe',
     harness: 'claude',
     model: 'claude-sonnet-4',
@@ -21,8 +21,8 @@ const scribe: Instance = {
   },
 };
 const bare: Instance = {
-  page_id: 'markdown/instances/agent/reader.md',
-  skill: 'agent',
+  page_id: 'markdown/instances/escurel-agent/reader.md',
+  skill: 'escurel-agent',
   at: null,
   frontmatter: { id: 'reader', skills: '[[skill::note]]' },
 };
@@ -61,7 +61,7 @@ describe('agents view model', () => {
   it('reads a profile off the agent page frontmatter', () => {
     expect(agentProfile(scribe)).toEqual({
       id: 'scribe',
-      pageId: 'markdown/instances/agent/scribe.md',
+      pageId: 'markdown/instances/escurel-agent/scribe.md',
       harness: 'claude',
       model: 'claude-sonnet-4',
       skills: ['note', 'triage'],
@@ -72,7 +72,7 @@ describe('agents view model', () => {
     // Absent scopes mean "no extra limit", not "nothing allowed".
     expect(agentProfile(bare)).toEqual({
       id: 'reader',
-      pageId: 'markdown/instances/agent/reader.md',
+      pageId: 'markdown/instances/escurel-agent/reader.md',
       skills: ['note'],
     });
   });
@@ -82,7 +82,7 @@ describe('agents view model', () => {
     expect(row).toMatchObject({
       label: 'scribe',
       description: 'claude · claude-sonnet-4 · 3 runs · 67% ok',
-      pageId: 'markdown/instances/agent/scribe.md',
+      pageId: 'markdown/instances/escurel-agent/scribe.md',
     });
     expect(row!.tooltip).toContain('Runs: note, triage');
     expect(row!.tooltip).toContain('Tools: search, expand, update_page');

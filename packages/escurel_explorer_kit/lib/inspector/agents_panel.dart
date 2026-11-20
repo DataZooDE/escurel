@@ -17,7 +17,7 @@ import '../state/usage.dart';
 import '../theme/app_theme.dart';
 
 /// The `agent` system skill's id.
-const _agentSkill = 'agent';
+const _agentSkill = 'escurel-agent';
 
 final agentProfilesProvider = FutureProvider<List<AgentProfile>>((ref) async {
   final page = await ref

@@ -7,7 +7,7 @@ import { LazyFlatTree, type FlatRead } from './lazyTree';
 import { usageFailure, usageRange } from './usageModel';
 
 /** The agent profile skill (a system skill, admin-write-only). */
-const AGENT_SKILL = 'agent';
+const AGENT_SKILL = 'escurel-agent';
 /** At most this many pages of profiles are read. */
 const MAX_PAGES = 10;
 
