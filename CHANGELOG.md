@@ -6,7 +6,12 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased — BREAKING (skill pages are written by administrators)
+## Unreleased
+
+## v2026.11.20 — BREAKING (skill pages are written by administrators)
+
+Writing a skill page and promoting a draft of one need `escurel:admin` or a group named in
+`ESCUREL_SKILL_ADMIN_GROUPS` (#847).
 
 **Upgrade checklist:**
 1. Writing a skill page, and promoting a draft of one, now needs `escurel:admin` unless you name more groups in
