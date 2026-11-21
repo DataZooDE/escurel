@@ -181,6 +181,12 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// `ESCUREL_RUNNER_DISPATCH` was set to a policy the runner does not know.
+    #[error("invalid ESCUREL_RUNNER_DISPATCH {value:?}: expected all or agent")]
+    InvalidDispatch {
+        /// The offending value.
+        value: String,
+    },
     /// `ESCUREL_RUNNER_POLL_INTERVAL` was set but is not a valid duration
     /// (`30s`, `1500ms`, `2m`, or a bare integer of seconds).
     #[error("invalid ESCUREL_RUNNER_POLL_INTERVAL {value:?}: expected e.g. 30s, 1500ms, 2m")]
@@ -534,6 +540,14 @@ pub struct RunnerConfig {
     /// or a non-default harness (#818). Source: `ESCUREL_RUNNER_EXCLUSIVE`
     /// (default off). Recommended for laptop and on-prem runners.
     pub exclusive: bool,
+    /// Which inbox events are this runner's work at all. Source:
+    /// `ESCUREL_RUNNER_DISPATCH`: `all` (default) dispatches every `user`
+    /// event; `agent` only those an agent profile is declared for (the
+    /// skill's `agent:` default, or an event's request for an agent that
+    /// lists the skill), plus chat turns, workflow steps and manual starts.
+    /// Under `agent` every other event stays in the inbox, unprocessed, for
+    /// its own consumer, and a requeue of it does not run it either.
+    pub dispatch: crate::runtime::DispatchPolicy,
     /// How often the runner re-probes its harness CLIs' versions and
     /// rewrites its `runtime` page when they changed (#818). Zero is refused.
     /// Source: `ESCUREL_RUNNER_PROBE_INTERVAL` (default 10m).
@@ -1153,6 +1167,11 @@ impl RunnerConfig {
                 .as_deref(),
             Some("1" | "true" | "on" | "yes")
         );
+        let dispatch = match lookup("ESCUREL_RUNNER_DISPATCH") {
+            None => crate::runtime::DispatchPolicy::All,
+            Some(raw) => crate::runtime::DispatchPolicy::parse(&raw)
+                .ok_or(ConfigError::InvalidDispatch { value: raw })?,
+        };
         let agent_narrow = matches!(
             lookup("ESCUREL_RUNNER_AGENT_NARROW")
                 .map(|v| v.trim().to_ascii_lowercase())
@@ -1253,6 +1272,7 @@ impl RunnerConfig {
             runner_id,
             labels,
             exclusive,
+            dispatch,
             probe_interval,
             claim_lease,
             admit_concurrency,
@@ -1941,6 +1961,23 @@ mod tests {
         })
         .expect_err("a bad poll interval must fail");
         assert!(matches!(err, ConfigError::InvalidPollInterval { .. }));
+    }
+
+    #[test]
+    fn the_dispatch_policy_defaults_to_all_and_refuses_an_unknown_value() {
+        use crate::runtime::DispatchPolicy;
+        let default = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(default.dispatch, DispatchPolicy::All);
+        let agent = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_DISPATCH").then(|| "agent".to_owned())
+        })
+        .expect("agent");
+        assert_eq!(agent.dispatch, DispatchPolicy::AgentDeclared);
+        let err = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_DISPATCH").then(|| "some".to_owned())
+        })
+        .expect_err("an unknown policy must fail");
+        assert!(matches!(err, ConfigError::InvalidDispatch { .. }));
     }
 
     #[test]

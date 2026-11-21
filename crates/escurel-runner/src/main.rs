@@ -264,6 +264,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    if config.dispatch != escurel_runner_core::runtime::DispatchPolicy::All {
+        tracing::info!(
+            target: "escurel_runner",
+            dispatch = config.dispatch.as_str(),
+            "ESCUREL_RUNNER_DISPATCH=agent: only events an agent profile is declared for are \
+             dispatched (plus chat turns, workflow steps and manual starts)"
+        );
+    }
     // The routing + claim gate (#818). Its holder id is the ledger's own
     // identity, so a restart on the same ledger keeps the leases it held.
     let gate: Option<Arc<RuntimeGate>> = match (config.tenant.as_ref(), tokens.as_ref()) {
@@ -275,7 +283,8 @@ async fn main() -> anyhow::Result<()> {
                 config.labels.clone(),
                 config.claim_lease,
             )
-            .exclusive(config.exclusive),
+            .exclusive(config.exclusive)
+            .dispatch(config.dispatch),
         )),
         _ => None,
     };
@@ -1489,7 +1498,21 @@ async fn dlq_list(State(state): State<AppState>) -> impl IntoResponse {
 /// fails), which used to turn every requeue into a `failed` row the
 /// poller then re-claimed — one extra failed run per requeue, and the
 /// answer to "which run did the retry start?" was wrong.
-async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
+/// What a requeue (or a `retry` control) did with the run it re-drove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Requeued {
+    /// Queued: the run starts now.
+    Queued,
+    /// Not queued now; the row is left retriable for the poller.
+    Parked,
+    /// Nothing to run, and the reason: `event_processed` (the gateway already
+    /// records the event processed, so a run could only repeat its effect) or
+    /// `no_agent` (`ESCUREL_RUNNER_DISPATCH=agent` and no agent profile is
+    /// declared for the event's skill).
+    NotRun(&'static str),
+}
+
+async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) -> Requeued {
     // The row is pending under a fresh run id. If anything below fails to
     // queue it, put it back to retriable `failed` so the poller re-drives
     // it: a `pending` row with nothing queued is dropped as in-flight by
@@ -1517,7 +1540,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
             // fail at once.
             let Some(client) = connect_now(&state.gateway_url, tokens).await else {
                 park("gateway unreachable");
-                return;
+                return Requeued::Parked;
             };
             let event = client
                 .list_events(ListEventsRequest {
@@ -1529,8 +1552,41 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
                 .and_then(|page| page.events.into_iter().next());
             let Some(event) = event else {
                 park("event unreadable");
-                return;
+                return Requeued::Parked;
             };
+            // An event the gateway already records processed has had its
+            // effect: re-running it could only repeat that effect (one more
+            // model run, one more write). The row is settled `processed`.
+            if event.status == "processed" {
+                if let Ok(Some(rec)) = state.ledger.get_run(tenant, event_id) {
+                    let _ = state.ledger.mark(
+                        &escurel_runner_core::RunId(rec.run_id),
+                        RunStatus::Processed,
+                    );
+                }
+                tracing::info!(
+                    target: "escurel_runner",
+                    tenant = %tenant,
+                    event_id = %event_id,
+                    "requeue: the event is already processed; nothing to run"
+                );
+                return Requeued::NotRun("event_processed");
+            }
+            // The dispatch policy holds for an operator's requeue too: an
+            // event that is not this runner's work stays in the inbox.
+            if let Some(gate) = &state.gate {
+                match gate.dispatchable(&client, &event).await {
+                    Some(true) => {}
+                    Some(false) => {
+                        park("no agent profile is declared for the event's skill");
+                        return Requeued::NotRun("no_agent");
+                    }
+                    None => {
+                        park("could not read whether an agent is declared");
+                        return Requeued::Parked;
+                    }
+                }
+            }
             let mut t = match tokens.subject() {
                 Some(subj) => Trigger::from_event_gated(&event, tenant.to_owned(), &subj),
                 None => Trigger::from_event(&event, tenant.to_owned()),
@@ -1578,12 +1634,12 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
                     .expect("inflight slots mutex")
                     .remove(event_id);
                 park("queue full");
-                return;
+                return Requeued::Parked;
             }
         }
         _ => {
             park("over quota");
-            return;
+            return Requeued::Parked;
         }
     }
     tracing::info!(
@@ -1592,6 +1648,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
         event_id = %event_id,
         "requeued run; cleared terminal block"
     );
+    Requeued::Queued
 }
 
 async fn dlq_requeue(
@@ -1619,15 +1676,20 @@ async fn dlq_requeue(
 
     match requeued {
         Ok((tenant, event_id)) => {
-            enqueue_requeued(&state, &tenant, &event_id).await;
-            (
-                StatusCode::OK,
-                axum::Json(serde_json::json!({
+            let body = match enqueue_requeued(&state, &tenant, &event_id).await {
+                Requeued::NotRun(reason) => serde_json::json!({
+                    "requeued": false,
+                    "reason": reason,
+                    "tenant": tenant,
+                    "event_id": event_id,
+                }),
+                Requeued::Queued | Requeued::Parked => serde_json::json!({
                     "requeued": true,
                     "tenant": tenant,
                     "event_id": event_id,
-                })),
-            )
+                }),
+            };
+            (StatusCode::OK, axum::Json(body))
         }
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -2689,6 +2751,28 @@ async fn dispatch_loop(
                 Ok((contract, agent)) => (contract, agent, None),
                 Err(e) => (None, escurel_runner_core::AgentChoice::None, Some(e)),
             };
+        // `ESCUREL_RUNNER_DISPATCH=agent`, for a trigger that did not pass the
+        // gate (a requeue the gate could not decide, a lone runner's held
+        // webhook): no agent profile is declared for the skill, so this is not
+        // the runner's work. Nothing runs and the event stays in the inbox; the
+        // row is left retriable, so the run happens if an agent is declared.
+        if agent_unreadable.is_none() && !config.dispatch.allows(&trigger, &agent) {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                label_skill = %trigger.label_skill,
+                run_id = %run_id,
+                "dispatch: ESCUREL_RUNNER_DISPATCH=agent and no agent profile is declared for \
+                 the skill; not run, left in the inbox"
+            );
+            let _ = ledger.mark(&run_id, RunStatus::Failed);
+            inflight
+                .lock()
+                .expect("inflight slots mutex")
+                .remove(&trigger.event_id);
+            runs.finish(run_id.as_str());
+            continue;
+        }
         let profile = agent.profile();
         // An agent's harness and model stand in for the skill's own asks.
         let skill_harness = profile
@@ -4325,7 +4409,15 @@ async fn act_on_control(
             };
             match state.ledger.retry_run(&run_id) {
                 Ok((run_tenant, event_id)) => {
-                    enqueue_requeued(state, &run_tenant, &event_id).await;
+                    if let Requeued::NotRun(reason) =
+                        enqueue_requeued(state, &run_tenant, &event_id).await
+                    {
+                        return ControlOutcome {
+                            outcome: "not_run",
+                            detail: Some(reason.to_owned()),
+                            new_run_id: None,
+                        };
+                    }
                     let new_run_id = state
                         .ledger
                         .get_run(&run_tenant, &event_id)
@@ -4355,7 +4447,15 @@ async fn act_on_control(
             };
             match state.ledger.requeue_dead_letter_by_event(tenant, &event_id) {
                 Ok(_) => {
-                    enqueue_requeued(state, tenant, &event_id).await;
+                    if let Requeued::NotRun(reason) =
+                        enqueue_requeued(state, tenant, &event_id).await
+                    {
+                        return ControlOutcome {
+                            outcome: "not_run",
+                            detail: Some(reason.to_owned()),
+                            new_run_id: None,
+                        };
+                    }
                     let new_run_id = state
                         .ledger
                         .get_run(tenant, &event_id)

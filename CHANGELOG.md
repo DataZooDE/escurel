@@ -8,7 +8,22 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Added:
+- **`ESCUREL_RUNNER_DISPATCH=agent`: the runner dispatches only work an agent profile is declared for.** The runner
+  dispatched every unprocessed `user` event in the inbox, so an event meant as a record (an audit entry a client
+  writes after a person's decision, a receipt) became a model run that "folded" it into its page; one client wrote
+  such a record per accepted draft and got one run per draft, plus drafts nobody asked for. With `agent` the runner
+  takes an event only when its skill names a default `agent:` or the event asks for an agent that lists the skill;
+  chat turns, workflow steps and manual starts are dispatched as before. Every other event stays in the inbox,
+  unclaimed and unprocessed, for its own consumer (`/debug/admission`: `no_agent`). The default `all` keeps today's
+  behaviour. Test: `crates/escurel-runner/tests/suite/dispatch_policy.rs`.
+
 Fixed:
+- **A requeue of an event that is already processed runs nothing.** `/dlq/requeue` and the `requeue` / `retry`
+  controls re-drove a dead-lettered run even when the event's consumer had filed it meanwhile (`assign_event`), so
+  the run repeated an effect that had already happened. The runner now settles the row `processed` and answers
+  `{requeued: false, reason: "event_processed"}` (controls: outcome `not_run`). Under `ESCUREL_RUNNER_DISPATCH=agent`
+  a requeue of an event no agent is declared for is not run either (`no_agent`).
 - **A member of `ESCUREL_SKILL_ADMIN_GROUPS` accepts a changeset that adds skills.** The skill-page rule (#847) let
   the named groups write skill pages, but the skill-authority gate (v2026.11.13) still granted authority keys
   (`acl`, `autonomy`, …) only to `escurel:admin` or the stored page's `acl.update`. A new skill has no stored page,

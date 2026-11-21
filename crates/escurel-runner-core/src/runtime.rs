@@ -165,6 +165,10 @@ pub enum Admit {
     /// The gateway refused this runner's identity a claim (it is not an
     /// admin): nothing is taken, since another runner may hold the event.
     Refused,
+    /// [`DispatchPolicy::AgentDeclared`]: no agent profile is declared for
+    /// the event's skill, so it is not this runner's work. Left in the inbox,
+    /// unclaimed and unprocessed, for whichever consumer it is meant for.
+    NoAgent,
 }
 
 impl Admit {
@@ -178,9 +182,74 @@ impl Admit {
             Self::Done => "done",
             Self::Retry => "retry",
             Self::Refused => "refused",
+            Self::NoAgent => "no_agent",
         }
     }
 }
+
+/// Which inbox events a runner dispatches (`ESCUREL_RUNNER_DISPATCH`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DispatchPolicy {
+    /// Every `user` event in the inbox (`all`, the default).
+    #[default]
+    All,
+    /// Only work an agent profile (an `escurel-agent` page) is declared for
+    /// (`agent`): the event's skill names a default `agent:` or the event asks
+    /// for an agent that lists the skill. Everything else (audit records,
+    /// receipts, events another worker consumes) is left in the inbox,
+    /// unclaimed and unprocessed. Chat turns, workflow steps and manual starts
+    /// are dispatched as before: they run as the person or plan that asked.
+    AgentDeclared,
+}
+
+impl DispatchPolicy {
+    /// Read `ESCUREL_RUNNER_DISPATCH`; `None` for a value it does not know.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "all" => Some(Self::All),
+            "agent" | "agent-declared" => Some(Self::AgentDeclared),
+            _ => None,
+        }
+    }
+
+    /// The policy's name as the setting spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::AgentDeclared => "agent",
+        }
+    }
+
+    /// Whether `trigger` is dispatched without looking at an agent: always
+    /// under [`Self::All`]; under [`Self::AgentDeclared`] for bookkeeping
+    /// (dropped later by the ledger gate), chat turns, workflow steps and
+    /// manual starts.
+    #[must_use]
+    pub fn passes_without_agent(self, trigger: &crate::Trigger) -> bool {
+        match self {
+            Self::All => true,
+            Self::AgentDeclared => {
+                trigger.is_system
+                    || trigger.chat.is_some()
+                    || trigger.workflow.is_some()
+                    || trigger.manual.is_some()
+            }
+        }
+    }
+
+    /// Whether `trigger` is dispatched once its agent is resolved: an agent
+    /// declared but unusable ([`crate::AgentChoice::Refused`]) still counts,
+    /// so its run is refused visibly instead of the event waiting silently.
+    #[must_use]
+    pub fn allows(self, trigger: &crate::Trigger, agent: &crate::AgentChoice) -> bool {
+        self.passes_without_agent(trigger) || !matches!(agent, crate::AgentChoice::None)
+    }
+}
+
+/// A skill and the agent an event asks for: what decides whether its run has an agent.
+type AgentKey = (String, Option<String>);
 
 /// How a claim the gateway answered with an error is treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +294,11 @@ pub struct RuntimeGate {
     lease: Duration,
     /// Take only work whose skill asks for this runner (`ESCUREL_RUNNER_EXCLUSIVE`).
     exclusive: bool,
+    /// Which events are this runner's work at all (`ESCUREL_RUNNER_DISPATCH`).
+    dispatch: DispatchPolicy,
+    /// Whether a run of `(skill, requested agent)` would execute as an agent,
+    /// for [`DispatchPolicy::AgentDeclared`]; re-read after [`SKILL_CACHE_TTL`].
+    agents: Mutex<HashMap<AgentKey, (Instant, bool)>>,
     skills: Mutex<Option<(Instant, HashMap<String, Requires>)>>,
     held: Mutex<HashMap<String, Held>>,
     claims_unsupported: AtomicBool,
@@ -253,6 +327,8 @@ impl RuntimeGate {
             labels,
             lease,
             exclusive: false,
+            dispatch: DispatchPolicy::All,
+            agents: Mutex::new(HashMap::new()),
             skills: Mutex::new(None),
             held: Mutex::new(HashMap::new()),
             claims_unsupported: AtomicBool::new(false),
@@ -353,6 +429,70 @@ impl RuntimeGate {
         self
     }
 
+    /// Which events this runner dispatches (`ESCUREL_RUNNER_DISPATCH`).
+    #[must_use]
+    pub fn dispatch(mut self, policy: DispatchPolicy) -> Self {
+        self.dispatch = policy;
+        self
+    }
+
+    /// The dispatch policy this gate applies.
+    #[must_use]
+    pub fn dispatch_policy(&self) -> DispatchPolicy {
+        self.dispatch
+    }
+
+    /// Whether `event` is work under this runner's [`DispatchPolicy`]:
+    /// `Some(true)` dispatch, `Some(false)` leave it in the inbox, `None` not
+    /// decidable now (the skill or agent page could not be read).
+    pub async fn dispatchable(&self, client: &Client, event: &Event) -> Option<bool> {
+        let trigger = crate::Trigger::from_event(event, "");
+        if self.dispatch.passes_without_agent(&trigger) {
+            return Some(true);
+        }
+        let key = (trigger.label_skill.clone(), trigger.agent.clone());
+        let cached = self
+            .agents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .filter(|(at, _)| at.elapsed() < SKILL_CACHE_TTL)
+            .map(|(_, declared)| *declared);
+        if let Some(declared) = cached {
+            return Some(declared);
+        }
+        let resolved = tokio::time::timeout(
+            ADMIT_CALL_TIMEOUT,
+            crate::resolve_run_agent(client, &trigger),
+        )
+        .await;
+        match resolved {
+            Ok(Ok((_, agent))) => {
+                let declared = self.dispatch.allows(&trigger, &agent);
+                let mut agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
+                if agents.len() >= MAX_DECISIONS {
+                    agents.clear();
+                }
+                agents.insert(key, (Instant::now(), declared));
+                Some(declared)
+            }
+            failed => {
+                let e = match failed {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "reading the skill's agent timed out".to_owned(),
+                };
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %event.event_id,
+                    label_skill = %event.label_skill,
+                    error = %e,
+                    "could not read whether an agent is declared for the skill; the event waits"
+                );
+                None
+            }
+        }
+    }
+
     /// Whether a skill's requirement asks for this runner in particular.
     fn asks_for_me(&self, skill: &Requires) -> bool {
         let offered = self.offered();
@@ -387,6 +527,22 @@ impl RuntimeGate {
         // routing to do and no lease worth a gateway call.
         if event.kind == "system" || event.label_skill.starts_with("escurel:") {
             return Admit::Take;
+        }
+        match self.dispatchable(client, event).await {
+            Some(true) => {}
+            Some(false) => {
+                self.tell_once(&event.event_id, || {
+                    tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %event.event_id,
+                        label_skill = %event.label_skill,
+                        "ESCUREL_RUNNER_DISPATCH=agent: no agent profile is declared for this \
+                         skill; left in the inbox for its own consumer"
+                    );
+                });
+                return Admit::NoAgent;
+            }
+            None => return Admit::Retry,
         }
         let declared = Requires::declared(event.provenance.get("requires"));
         // An unknown catalogue is not "no requirement": routing on it would
@@ -776,6 +932,63 @@ pub fn registration(harnesses: &[RuntimeHarness], labels: &[String], max_concurr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn trigger_with(provenance: Value, kind: &str) -> crate::Trigger {
+        let event = Event {
+            event_id: "e1".into(),
+            label_skill: "note".into(),
+            kind: kind.into(),
+            provenance,
+            ..Default::default()
+        };
+        crate::Trigger::from_event(&event, "acme")
+    }
+
+    #[test]
+    fn the_dispatch_policy_parses_its_two_names_and_nothing_else() {
+        assert_eq!(DispatchPolicy::parse(""), Some(DispatchPolicy::All));
+        assert_eq!(DispatchPolicy::parse(" ALL "), Some(DispatchPolicy::All));
+        assert_eq!(
+            DispatchPolicy::parse("agent"),
+            Some(DispatchPolicy::AgentDeclared)
+        );
+        assert_eq!(
+            DispatchPolicy::parse("agent-declared"),
+            Some(DispatchPolicy::AgentDeclared)
+        );
+        assert_eq!(DispatchPolicy::parse("none"), None);
+        assert_eq!(DispatchPolicy::default(), DispatchPolicy::All);
+    }
+
+    #[test]
+    fn under_the_agent_policy_only_declared_agents_and_exempt_triggers_dispatch() {
+        use crate::AgentChoice;
+        let plain = trigger_with(json!({}), "user");
+        let profile = escurel_types::agent_profile::AgentProfile {
+            id: "scribe".into(),
+            ..Default::default()
+        };
+        // `all` dispatches everything, agent or not.
+        assert!(DispatchPolicy::All.allows(&plain, &AgentChoice::None));
+        // `agent`: an agentless run is not dispatched ...
+        assert!(!DispatchPolicy::AgentDeclared.allows(&plain, &AgentChoice::None));
+        // ... an agent run is, and so is a declared agent that cannot run
+        // (its run is refused visibly rather than the event waiting silently).
+        assert!(DispatchPolicy::AgentDeclared.allows(&plain, &AgentChoice::Agent(profile)));
+        assert!(DispatchPolicy::AgentDeclared.allows(&plain, &AgentChoice::Refused("x".into())));
+        // Chat turns, workflow steps, manual starts and bookkeeping pass.
+        let chat = trigger_with(
+            json!({ "chat_group_id": "page-chat:v1:abc:markdown/instances/note/c1.md",
+                    "user_msg_id": "m1" }),
+            "user",
+        );
+        assert!(chat.chat.is_some());
+        let system = trigger_with(json!({}), "system");
+        for t in [&chat, &system] {
+            assert!(DispatchPolicy::AgentDeclared.passes_without_agent(t));
+        }
+        assert!(!DispatchPolicy::AgentDeclared.passes_without_agent(&plain));
+    }
 
     #[test]
     fn the_harness_set_leads_with_the_default() {
