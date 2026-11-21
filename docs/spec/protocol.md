@@ -943,6 +943,19 @@ are kept separate by construction:
 - **Identifier position** — `{{target}}` resolves to the target's managed
   `vw_…` view name, allow-listed through the same `vw_`-prefix guard the
   projection path uses (never a bound value).
+- **Relation position** — the statement may read **only** its target. Before it
+  is prepared, DuckDB's own parse tree (`json_serialize_sql`) is walked
+  default-deny: exactly one `SELECT`; every table reference is the target view,
+  a CTE in scope at that point, a join, a subquery, `VALUES`, or a pure
+  generator (`range`, `generate_series`, `unnest`); no function that reads
+  process or engine state (`getenv`, `current_setting`, `getvariable`, the
+  `duckdb_*` / `read_*` / `pragma_*` families) and no function qualified with a
+  catalog other than the built-in `system.main`. Anything else — another
+  `vw_` view, `pages`, `external_credentials`, a file path, `PIVOT`,
+  `SUMMARIZE`, `COPY`, DML, several statements — is refused with
+  the domain error `sql_not_allowed`, naming the reason (#854). The read runs on
+  the indexer's own connection, so this rule, not the target ACL, is what keeps
+  the rest of the tenant out of reach.
 
 **Access:** `query_instance` is an **agent tool**
 gated by the **per-instance read ACL on the target instance**

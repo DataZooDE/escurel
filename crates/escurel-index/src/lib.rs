@@ -47,6 +47,7 @@ mod pending;
 pub mod quack_policy;
 pub mod quack_session;
 pub mod query;
+mod query_gate;
 pub mod read;
 mod relation_guard;
 pub mod result_ref;
