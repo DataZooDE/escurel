@@ -288,7 +288,16 @@ impl Indexer {
     pub async fn refresh_search_projections(
         &self,
     ) -> Result<sql_view_search::ProjectionRefresh, IndexerError> {
-        sql_view::refresh_search_projections(self).await
+        sql_view::refresh_search_projections(self, None).await
+    }
+
+    /// [`Self::refresh_search_projections`] for one skill's instances (after
+    /// its skill page changed, so its `search_text` may have).
+    pub async fn refresh_search_projections_for_skill(
+        &self,
+        skill: &str,
+    ) -> Result<sql_view_search::ProjectionRefresh, IndexerError> {
+        sql_view::refresh_search_projections(self, Some(skill)).await
     }
 
     /// Reconstruct every SQL view from its overlay's `backend_ref.source`

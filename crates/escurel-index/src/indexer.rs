@@ -70,6 +70,11 @@ pub struct Indexer {
     /// Serialises DuckLake snapshot GC passes ([`crate::snapshot::gc_lake_snapshots`]),
     /// which run on their own connection and so are not ordered by `conn`.
     pub(crate) gc_lock: Mutex<()>,
+    /// Serialises SQL-lane projection captures (`backend::sql_view_search`).
+    /// Each capture derives its key from the CURRENT overlay and skill under
+    /// this lock, so the last capture always reflects the latest binding and a
+    /// slower, older capture can never publish over it.
+    pub(crate) projection_lock: Mutex<()>,
     /// Dirty counter for the DuckLake publish loop: bumped once per
     /// committed index mutation ([`Self::update_page`],
     /// [`Self::write_document_blocks`] — the shared tail of
@@ -440,6 +445,7 @@ impl Indexer {
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
             gc_lock: Mutex::new(()),
+            projection_lock: Mutex::new(()),
             mutation_epoch: AtomicU64::new(0),
             query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),
@@ -964,7 +970,14 @@ impl Indexer {
         principal: Option<&str>,
     ) -> Result<(), IndexerError> {
         self.update_page_inner(page_id, content, principal, true)
-            .await
+            .await?;
+        // A sql_view skill page's `search_text` keys its instances' search
+        // projections: re-capture them, or the SQL lane goes silently empty for
+        // the skill until a rebuild. Best-effort (logged per view).
+        if let Some(skill) = sql_view_skill_id(content) {
+            self.refresh_search_projections_for_skill(&skill).await?;
+        }
+        Ok(())
     }
 
     /// [`Self::update_page_as`] with the lane write switchable.
@@ -1270,6 +1283,14 @@ impl Indexer {
         {
             let mut conn = self.conn.lock().await;
             let tx = conn.transaction()?;
+            // A retracted sql_view instance's search projection goes with it: the
+            // cached source text must not outlive the instance (#849 review F2).
+            tx.execute(
+                "DELETE FROM sql_view_search_text WHERE view IN (\
+                   SELECT json_extract_string(frontmatter, '$.backend_ref.view') FROM pages \
+                   WHERE page_id = ? AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'sql_view')",
+                params![page_id],
+            )?;
             tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
             tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
             tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
@@ -2763,6 +2784,22 @@ pub(crate) fn format_vector_literal(v: &[f32]) -> String {
     }
     out.push(']');
     out
+}
+
+/// The id of the skill `content` defines, when it is a skill page with a
+/// `backend: {kind: sql_view}` block (the only kind whose instances have search
+/// projections).
+fn sql_view_skill_id(content: &str) -> Option<String> {
+    let parsed = escurel_md::parse(content).ok()?;
+    if parsed.frontmatter.page_kind != escurel_md::PageKind::Skill {
+        return None;
+    }
+    let fields = &parsed.frontmatter.fields;
+    let kind = fields.get("backend")?.get("kind")?.as_str()?;
+    if kind != "sql_view" {
+        return None;
+    }
+    fields.get("id")?.as_str().map(str::to_owned)
 }
 
 #[cfg(test)]

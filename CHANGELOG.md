@@ -27,6 +27,13 @@ Fixed:
   connections. A projection read error is logged instead of reading as "no match", and
   `refresh_search_projections` returns a per-view report (`ProjectionRefresh`: captured / failed).
 
+- **A sql_view instance cannot silently drop out of search any more.** A projection refresh that read an overlay
+  before a re-create and published after it overwrote the new projection with the old key, and the instance was not
+  found until a restart. Captures are now serialised, and each one derives its key from the overlay's and skill's
+  CURRENT state, so the last capture always matches the live binding. Editing a sql_view skill page re-captures its
+  instances (a `search_text` change used to empty the SQL lane for that skill). Retracting an instance
+  (`delete_page`) removes its cached search text, and a full refresh prunes rows no overlay names.
+
 Corrections to #849's entry (v2026.11.21): match counts are not strictly unchanged. Columns are matched as one
 `chr(31)`-joined text, so an unescaped `%`/`_` in `q` can match across two columns, rows whose search columns are
 all NULL or empty are not counted, and beyond 100 000 distinct texts per view counts are lower bounds.

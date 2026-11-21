@@ -78,21 +78,33 @@ pub(crate) fn signature(binding_hash: &str, cols: &[String]) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// Capture `view`'s search texts under `sig`, replacing whatever it held, and
-/// return how many distinct texts were kept. On a failure (source unreachable)
-/// the previous projection is kept.
+/// Capture `view`'s search texts, replacing whatever it held, and return how
+/// many distinct texts were kept. On a failure (source unreachable) the
+/// previous projection is kept.
+///
+/// The key is derived HERE, under [`Indexer::projection_lock`], from the
+/// overlay's CURRENT binding hash and the skill's CURRENT columns — never from
+/// a value the caller read earlier. Captures are serialised, so the last one
+/// reflects the latest binding; a refresh that read an overlay before a
+/// re-create can no longer publish the old key over the new projection.
 pub(crate) async fn capture(
     indexer: &Indexer,
+    skill: &str,
     view: &str,
-    sig: &str,
-    cols: &[String],
 ) -> Result<usize, IndexerError> {
+    let _serial = indexer.projection_lock.lock().await;
+    let cols = search_columns(indexer, skill).await;
     if cols.is_empty() || !is_managed_view(view) {
         tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no searchable columns");
         return Ok(0);
     }
+    let Some(binding_hash) = current_binding_hash(indexer, view).await? else {
+        tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no overlay names the view");
+        return Ok(0);
+    };
+    let sig = signature(&binding_hash, &cols);
     let conn = indexer.conn.lock().await.try_clone()?;
-    let texts = super::blocking_section(|| capture_on(&conn, view, sig, cols))?;
+    let texts = super::blocking_section(|| capture_on(&conn, view, &sig, &cols))?;
     if texts >= MAX_SEARCH_TEXTS {
         tracing::warn!(
             target: "escurel",
@@ -102,6 +114,40 @@ pub(crate) async fn capture(
         );
     }
     Ok(texts)
+}
+
+/// The `backend_ref.binding_hash` of the sql_view overlay that names `view`.
+async fn current_binding_hash(
+    indexer: &Indexer,
+    view: &str,
+) -> Result<Option<String>, IndexerError> {
+    let conn = indexer.conn.lock().await;
+    let mut stmt = conn.prepare(
+        "SELECT json_extract_string(frontmatter, '$.backend_ref.binding_hash') FROM pages \
+         WHERE page_type = 'instance' \
+           AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'sql_view' \
+           AND json_extract_string(frontmatter, '$.backend_ref.view') = ? LIMIT 1",
+    )?;
+    let mut rows = stmt.query([view])?;
+    Ok(match rows.next()? {
+        Some(r) => Some(r.get::<_, Option<String>>(0)?.unwrap_or_default()),
+        None => None,
+    })
+}
+
+/// Drop the projection of every view no sql_view overlay names any more (an
+/// instance deleted by a path that did not prune, or a rebuild that lost it).
+pub(crate) async fn prune_orphans(indexer: &Indexer) -> Result<usize, IndexerError> {
+    let _serial = indexer.projection_lock.lock().await;
+    let conn = indexer.conn.lock().await;
+    Ok(conn.execute(
+        "DELETE FROM sql_view_search_text WHERE view NOT IN (\
+           SELECT json_extract_string(frontmatter, '$.backend_ref.view') FROM pages \
+           WHERE page_type = 'instance' \
+             AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'sql_view' \
+             AND json_extract_string(frontmatter, '$.backend_ref.view') IS NOT NULL)",
+        [],
+    )?)
 }
 
 fn capture_on(
@@ -346,6 +392,71 @@ mod tests {
             elapsed < BOUND,
             "{} decisions took {elapsed:?} behind a busy connection ({HOLD:?} holds)",
             2 * HITS
+        );
+    }
+
+    async fn projected_rows(idx: &Indexer, view: &str) -> i64 {
+        idx.conn
+            .lock()
+            .await
+            .query_row(
+                "SELECT count(*) FROM sql_view_search_text WHERE view = ?",
+                [view],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// The projection holds raw source text: it must not outlive the instance
+    /// (retracting the instance prunes it), and a refresh drops rows no overlay
+    /// names any more.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_projection_does_not_outlive_its_instance() {
+        let f = fixture();
+        let idx = &f.idx;
+        idx.update_page(
+            "markdown/skills/customers.md",
+            "---\nkind: skill\nid: customers\ndescription: x\nbackend:\n  kind: sql_view\n  \
+             source: { connector: json_dir, relation: /unused }\n  search_text: [title]\n---\n# c\n",
+        )
+        .await
+        .unwrap();
+        let data = tempfile::TempDir::new().unwrap();
+        std::fs::write(data.path().join("a.json"), br#"{"title":"secret widget"}"#).unwrap();
+        let binding = SqlViewBinding {
+            connector: SqlConnector::JsonDir,
+            attach: None,
+            relation: data.path().to_str().unwrap().to_owned(),
+            filter: None,
+            project: Default::default(),
+            search_text: vec!["title".to_owned()],
+        };
+        let m = SqlViewBackend::new(Arc::clone(idx))
+            .create_instance("customers", &binding, "eu", "# eu")
+            .await
+            .unwrap();
+        assert_eq!(projected_rows(idx, &m.view).await, 1);
+
+        assert!(idx.delete_page(&m.page_id).await.unwrap());
+        assert_eq!(
+            projected_rows(idx, &m.view).await,
+            0,
+            "retracting the instance prunes its projection"
+        );
+
+        idx.conn
+            .lock()
+            .await
+            .execute(
+                "INSERT INTO sql_view_search_text VALUES ('vw_gone__x', 's', 'stale text', 1)",
+                [],
+            )
+            .unwrap();
+        idx.refresh_search_projections().await.unwrap();
+        assert_eq!(
+            projected_rows(idx, "vw_gone__x").await,
+            0,
+            "a refresh prunes orphans"
         );
     }
 }

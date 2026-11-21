@@ -123,9 +123,7 @@ impl SqlViewBackend {
         // Capture the search projection now, while the source was just read
         // successfully. Best-effort: a failure leaves the instance searchable by its
         // page text and the next refresh retries.
-        let cols = super::sql_view_search::search_columns(&self.indexer, skill).await;
-        let sig = super::sql_view_search::signature(&binding_hash, &cols);
-        if let Err(e) = super::sql_view_search::capture(&self.indexer, &view, &sig, &cols).await {
+        if let Err(e) = super::sql_view_search::capture(&self.indexer, skill, &view).await {
             tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not captured");
         }
 
@@ -1188,13 +1186,20 @@ pub(crate) async fn reconstruct_views(indexer: &Indexer) -> Result<(), crate::In
 /// unreachable keeps its previous projection and is reported (and logged).
 pub(crate) async fn refresh_search_projections(
     indexer: &Indexer,
+    only_skill: Option<&str>,
 ) -> Result<super::sql_view_search::ProjectionRefresh, crate::IndexerError> {
     let mut report = super::sql_view_search::ProjectionRefresh::default();
-    for (_page_id, skill, view, backend_ref) in enumerate_sql_view_overlays(indexer).await? {
-        let cols = super::sql_view_search::search_columns(indexer, &skill).await;
-        let hash = backend_ref["binding_hash"].as_str().unwrap_or_default();
-        let sig = super::sql_view_search::signature(hash, &cols);
-        match super::sql_view_search::capture(indexer, &view, &sig, &cols).await {
+    if only_skill.is_none() {
+        let pruned = super::sql_view_search::prune_orphans(indexer).await?;
+        if pruned > 0 {
+            tracing::info!(target: "escurel", pruned, "sql_view search projection: orphaned rows pruned");
+        }
+    }
+    for (_page_id, skill, view, _backend_ref) in enumerate_sql_view_overlays(indexer).await? {
+        if only_skill.is_some_and(|s| s != skill) {
+            continue;
+        }
+        match super::sql_view_search::capture(indexer, &skill, &view).await {
             Ok(texts) => report.captured.push((view, texts)),
             Err(e) => {
                 tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
