@@ -2172,6 +2172,15 @@ fn query_err(e: escurel_index::QueryError) -> JsonRpcError {
             Some("`expand` the query page to see the parameters it declares"),
         ),
         Q::Forbidden { .. } => JsonRpcError::domain("forbidden", "ref", e.to_string(), None),
+        Q::SqlNotAllowed { .. } => JsonRpcError::domain(
+            "sql_not_allowed",
+            "ref",
+            e.to_string(),
+            Some(
+                "a query page may read only {{target}}, its own CTEs and range / generate_series / \
+                 unnest; rewrite it over its target",
+            ),
+        ),
         _ => JsonRpcError::internal(format!("query_instance: {e}")),
     }
 }
