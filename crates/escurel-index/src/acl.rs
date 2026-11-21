@@ -681,11 +681,13 @@ impl Indexer {
     /// all. Otherwise an instance carrying `schedule`/`autonomy` as data
     /// could be relabelled `kind: skill` with nothing "changed".
     ///
-    /// A change is allowed to a PERSON who is admin, or who is in the
-    /// STORED skill's `acl.update` groups — never the incoming page's: a
-    /// draft that lists its author there would otherwise promote itself. A
-    /// create has no stored skill, so a new skill carrying authority keys is
-    /// an admin's; so is a stored skill without `acl.update`. A machine
+    /// A change is allowed to a PERSON who is admin, who is in a group of the
+    /// operator's skill-page rule (`ESCUREL_SKILL_ADMIN_GROUPS`, not `*`), or
+    /// who is in the STORED skill's `acl.update` groups — never the incoming
+    /// page's: a draft that lists its author there would otherwise promote
+    /// itself. A create has no stored skill, so a new skill carrying authority
+    /// keys is an admin's or a skill administrator's; so is a stored skill
+    /// without `acl.update`. A machine
     /// (run, narrowed agent, delegated token) never changes them, admin
     /// role or not. The structural `public` group grants nothing here.
     pub async fn skill_authority_denied(
@@ -724,6 +726,16 @@ impl Indexer {
         if caller.is_admin {
             return Ok(Vec::new());
         }
+        let mut groups = self.caller_groups(caller).await?;
+        groups.remove("public");
+        // The operator's skill administrators (`ESCUREL_SKILL_ADMIN_GROUPS`) set authority keys as
+        // `escurel:admin` does: they are who writes skill pages, so a new skill (no stored
+        // `acl.update` to grant it) is theirs too. `*` names no administrators and grants nothing here.
+        if let crate::SkillWritePolicy::Groups(admins) = self.skill_write_policy()
+            && admins.iter().any(|g| groups.contains(g))
+        {
+            return Ok(Vec::new());
+        }
         let update = match stored_fields {
             Some(Ok(fields)) if was_skill => {
                 let fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(&fields)?)?;
@@ -734,8 +746,6 @@ impl Indexer {
         let Some(update) = update else {
             return Ok(changed);
         };
-        let mut groups = self.caller_groups(caller).await?;
-        groups.remove("public");
         if intersects(&update, &groups) {
             return Ok(Vec::new());
         }

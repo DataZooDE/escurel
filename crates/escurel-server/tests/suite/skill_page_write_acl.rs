@@ -462,3 +462,138 @@ async fn write_acl_off_leaves_skill_pages_ungated() {
     ok(&p, &member(&p), "update_page", write(PAGE, &reworded())).await;
     p.shutdown().await;
 }
+
+/// A new skill a release adds: it sets authority keys (`acl`, `autonomy`) and links to another
+/// new skill of the same changeset.
+fn new_skill(id: &str, extra: &str) -> String {
+    format!(
+        "---\nkind: skill\nid: {id}\ndescription: A skill a release adds.\nautonomy: review\n\
+         acl:\n  read: [public]\n  update: [{TENANT_ADMIN}]\nfields:\n  - {{name: name, kind: string}}\n\
+         {extra}---\n# {id}\n"
+    )
+}
+
+async fn create_draft_in(
+    p: &EscurelProcess,
+    token: &str,
+    target: &str,
+    content: &str,
+    changeset: Option<&str>,
+) -> Value {
+    let mut args = json!({ "target_page_id": target, "content": content });
+    match changeset {
+        Some(id) => args["changeset_id"] = json!(id),
+        None => args["new_changeset"] = json!(true),
+    }
+    if let Some(base) = stored(p, target).await["content_sha256"].as_str() {
+        args["base_sha256"] = json!(base);
+    }
+    ok(p, token, "create_draft", args).await["draft"].clone()
+}
+
+/// A skill release that ADDS skills is accepted by a member of `ESCUREL_SKILL_ADMIN_GROUPS`: the
+/// group is who administers skill pages, so it also sets the authority keys a new skill carries
+/// (a new page has no stored `acl.update` to grant them). Before, every create was refused with
+/// `authority_keys_need_admin` while the changes of existing skills landed.
+#[tokio::test]
+async fn a_configured_group_lands_a_release_that_adds_skills() {
+    let p = gateway(Some(TENANT_ADMIN)).await;
+    let publisher = admin(&p);
+    let tia = tenant_admin(&p);
+    // As a changeset: one change of an existing skill and two new skills, the first linking to the second.
+    let first = create_draft_in(&p, &publisher, PAGE, &reworded(), None).await;
+    let changeset = first["changeset_id"]
+        .as_str()
+        .expect("changeset")
+        .to_owned();
+    let child = "markdown/skills/stage.md";
+    let parent = "markdown/skills/value-stream.md";
+    create_draft_in(
+        &p,
+        &publisher,
+        child,
+        &new_skill(
+            "stage",
+            "  - {name: value_stream, kind: link, to: value-stream}\n",
+        ),
+        Some(&changeset),
+    )
+    .await;
+    create_draft_in(
+        &p,
+        &publisher,
+        parent,
+        &new_skill("value-stream", ""),
+        Some(&changeset),
+    )
+    .await;
+    // A member is refused the whole changeset, by the skill-page rule.
+    refused(
+        &p,
+        &member(&p),
+        "promote_changeset",
+        json!({ "changeset_id": changeset }),
+    )
+    .await;
+    assert!(stored(&p, parent).await["frontmatter"].is_null());
+    ok(
+        &p,
+        &tia,
+        "promote_changeset",
+        json!({ "changeset_id": changeset }),
+    )
+    .await;
+    assert_eq!(description(&p).await, "How we ship, carefully.");
+    assert_eq!(stored(&p, child).await["frontmatter"]["id"], "stage");
+    assert_eq!(
+        stored(&p, parent).await["frontmatter"]["id"],
+        "value-stream"
+    );
+
+    // Draft by draft, as a client that promotes each member on its own does.
+    let single = new_skill("discovery-row", "");
+    let draft = create_draft_in(
+        &p,
+        &publisher,
+        "markdown/skills/discovery-row.md",
+        &single,
+        None,
+    )
+    .await;
+    ok(
+        &p,
+        &tia,
+        "promote_draft",
+        json!({ "draft_id": draft["draft_id"] }),
+    )
+    .await;
+    assert_eq!(
+        stored(&p, "markdown/skills/discovery-row.md").await["frontmatter"]["id"],
+        "discovery-row"
+    );
+
+    // The group also changes an authority key on an existing skill whose `acl.update` does not name it.
+    let with_autonomy = reworded().replace("description:", "autonomy: confirm\ndescription:");
+    ok(&p, &tia, "update_page", write(PAGE, &with_autonomy)).await;
+    p.shutdown().await;
+}
+
+/// Under `*` every writer may write a skill page, but the authority keys a new skill sets stay with
+/// `escurel:admin`: `*` names no administrators. (A run token is never granted by the group:
+/// `a_run_token_is_never_granted_by_the_group`.)
+#[tokio::test]
+async fn under_a_star_a_member_still_may_not_set_authority_keys() {
+    let p = gateway(Some("*")).await;
+    let body = rpc(
+        &p,
+        &member(&p),
+        "update_page",
+        write("markdown/skills/stage.md", &new_skill("stage", "")),
+    )
+    .await;
+    assert_eq!(
+        body["error"]["data"]["code"], "authority_keys_need_admin",
+        "{body}"
+    );
+    p.shutdown().await;
+}

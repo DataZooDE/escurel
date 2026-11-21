@@ -518,8 +518,10 @@ pub(super) async fn skill_authority_refusal(
         );
         return Ok(());
     }
+    // `*` and the default name only `escurel:admin`; a group list names its groups too.
+    let admins = indexer.skill_write_policy().describe();
     let mut refusal = JsonRpcError::forbidden(format!(
-        "`{page_id}`: changing {named} on a skill page needs `escurel:admin`, or membership of the \
+        "`{page_id}`: changing {named} on a skill page needs {admins}, or membership of the \
          stored page's `acl.update` groups; an agent run never changes them. Propose it as a draft \
          and ask an admin to promote it"
     ))

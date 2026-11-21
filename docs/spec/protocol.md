@@ -853,7 +853,10 @@ one, or promoting a draft of one, needs `escurel:admin` or a person in a
 group named by `ESCUREL_SKILL_ADMIN_GROUPS` (`*` = every writer). Proposing
 (`create_draft`) stays open. A refusal is the issue code
 `skill_page_needs_admin`; a changeset or branch holding such a page is refused
-as a whole.
+as a whole. A person in such a group also changes a skill's authority keys
+(`acl`, `autonomy`, …; refused otherwise with `authority_keys_need_admin`),
+so a new skill that sets them is theirs as well as an admin's; `*` names no
+administrators and grants no authority keys.
 
 #### `list_instances`
 
