@@ -8,6 +8,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.21.1
+
 Security:
 - **An authored query page reads only its target (#854).** `query_instance` checked that the caller may read the
   target instance and then ran the page's SQL on the indexer's own connection, which also holds
@@ -28,21 +30,21 @@ Added:
   takes an event only when its skill names a default `agent:` or the event asks for an agent that lists the skill;
   chat turns, workflow steps and manual starts are dispatched as before. Every other event stays in the inbox,
   unclaimed and unprocessed, for its own consumer (`/debug/admission`: `no_agent`). The default `all` keeps today's
-  behaviour. Test: `crates/escurel-runner/tests/suite/dispatch_policy.rs`.
+  behaviour (#864). Test: `crates/escurel-runner/tests/suite/dispatch_policy.rs`.
 
 Fixed:
 - **A requeue of an event that is already processed runs nothing.** `/dlq/requeue` and the `requeue` / `retry`
   controls re-drove a dead-lettered run even when the event's consumer had filed it meanwhile (`assign_event`), so
   the run repeated an effect that had already happened. The runner now settles the row `processed` and answers
   `{requeued: false, reason: "event_processed"}` (controls: outcome `not_run`). Under `ESCUREL_RUNNER_DISPATCH=agent`
-  a requeue of an event no agent is declared for is not run either (`no_agent`).
+  a requeue of an event no agent is declared for is not run either (`no_agent`) (#864).
 - **A member of `ESCUREL_SKILL_ADMIN_GROUPS` accepts a changeset that adds skills.** The skill-page rule (#847) let
   the named groups write skill pages, but the skill-authority gate (v2026.11.13) still granted authority keys
   (`acl`, `autonomy`, …) only to `escurel:admin` or the stored page's `acl.update`. A new skill has no stored page,
   so promoting its create draft was refused with `-32003 authority_keys_need_admin` while the changes of existing
   skills in the same release landed. A person in a named group now changes authority keys as an admin does (also on
   an existing skill whose `acl.update` does not name the group). Machine callers are still never granted, and `*`
-  grants no authority keys.
+  grants no authority keys (#862).
 - **An unfiltered `search` no longer takes the tenant's connection once per skill.** The rows lane and the
   "not searched: REST/MCP-backed skills" hint re-read every skill page (`rows_source` / `remote_rows::source`) under
   the connection lock, and the SQL lane took it three times per `sql_view` instance. Behind a busy neighbour (in the

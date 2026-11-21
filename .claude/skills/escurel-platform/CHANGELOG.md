@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.33.0 — which inbox events a runner dispatches
+
+- `ESCUREL_RUNNER_DISPATCH` (`all` default | `agent`): with `agent` a runner dispatches only events an agent profile is
+  declared for (the skill's `agent:`, or `provenance.agent` naming an agent that lists the skill), plus chat turns,
+  workflow steps and manual starts; everything else stays in the inbox, unprocessed, for its own consumer. A
+  requeue / retry of an event that is already processed runs nothing (control outcome `not_run`,
+  `/dlq/requeue` `{requeued: false, reason}`) (references/11; escurel #864).
+
+## 0.32.1 — skill administrators set authority keys
+
+- A person in a group of `ESCUREL_SKILL_ADMIN_GROUPS` changes a skill's authority keys (`acl`, `autonomy`, …) as an
+  `escurel:admin` does, so a new skill that sets them is theirs too (a tenant administrator accepts a release that
+  adds skills). `*` grants no authority keys; a machine caller never (references/04, 08; escurel #862).
+
 ## 0.32.0 — namespaced system skills
 
 - **BREAKING:** the system skills are `escurel-agent`, `escurel-runtime` and `escurel-chat-channel`

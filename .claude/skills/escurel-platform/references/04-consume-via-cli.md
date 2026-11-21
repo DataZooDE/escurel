@@ -218,7 +218,8 @@ drive them over MCP/gRPC or the BFF.
   warns on stderr — promoting that draft removes them. Anyone may import (a
   draft is a proposal), but the gateway judges the **promoter**: a draft that
   adds, removes or changes an authority key lands only for an `escurel:admin`,
-  or a member of the **stored** skill's `acl.update` groups (never the draft's
+  a member of an `ESCUREL_SKILL_ADMIN_GROUPS` group, or a member of the
+  **stored** skill's `acl.update` groups (never the draft's
   own `acl:`). Anyone else's `draft promote` is refused with `-32003`
   `data.code: authority_keys_need_admin`, `data.keys` naming the keys, and
   nothing lands (see references/08 § Skill authority keys). A draft that
