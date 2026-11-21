@@ -32,6 +32,7 @@ mod codex_live;
 mod concurrent_admission;
 mod confirm_unflagged;
 mod delegate_a2a;
+mod dispatch_policy;
 mod distributed_runtimes;
 mod echo_analysis;
 mod echo_end_to_end;

@@ -1206,6 +1206,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_DISPATCH",
+        component: "Runner",
+        default: "all",
+        doc: "which inbox events this runner dispatches: `all` = every `user` event; `agent` = only those an agent profile (`escurel-agent` page) is declared for (the skill's `agent:`, or an event's `provenance.agent` naming an agent that lists the skill), plus chat turns, workflow steps and manual starts. Everything else is left in the inbox, unclaimed and unprocessed, for its own consumer, and a requeue does not run it. Any other value refuses to start",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_PROBE_INTERVAL",
         component: "Runner",
         default: "10m",

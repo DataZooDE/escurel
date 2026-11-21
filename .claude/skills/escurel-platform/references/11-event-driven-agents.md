@@ -159,6 +159,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports and its `runtime` page — set a stable one when several runners share a tenant |
 | `ESCUREL_RUNNER_LABELS` | none | what this runner carries for `requires: {labels}` routing, comma-separated (`site:muc,has:sap-gui`) — see *Several runners on one tenant* |
 | `ESCUREL_RUNNER_EXCLUSIVE` | off | take only work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners — see *Several runners on one tenant* |
+| `ESCUREL_RUNNER_DISPATCH` | `all` | which inbox events are this runner's work: `all` = every `user` event; `agent` = only those an agent profile is declared for (the skill's `agent:` default, or `provenance.agent` naming an agent that lists the skill), plus chat turns, workflow steps and manual starts. Every other event stays in the inbox, unclaimed and unprocessed, for its own consumer (`/debug/admission` says `no_agent`); a requeue does not run it either — see *Agent profiles* |
 | `ESCUREL_RUNNER_PROBE_INTERVAL` | `10m` | re-probe the harness CLIs' `--version` and rewrite the `runtime` page when a version or availability changed; a CLI whose probe fails gets no `requires:` work |
 | `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll), at most 60m | the `claim_event` lease on an inbox event this runner takes; 1s..60m and at least two poll intervals, else the runner refuses to start; renewed every third of the lease by its own task |
 | `ESCUREL_RUNNER_TOKEN_FILE` | — | the bearer in a file a sidecar keeps fresh; used when `ESCUREL_RUNNER_TOKEN` is unset, re-read whenever it changes (no restart after a rotation) |
@@ -320,6 +321,7 @@ filed on, in the run's own record (`list_events { run_id }`), with
 | `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
 | `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
+| `retry` / `requeue` | `not_run` | nothing is run: `detail` is `event_processed` (the gateway already records the event processed; the row is settled `processed`) or `no_agent` (`ESCUREL_RUNNER_DISPATCH=agent` and no agent profile is declared for the skill). `/dlq/requeue` answers `{requeued: false, reason}` for the same cases |
 | any | `refused` | not actionable; `detail` says why (`not dead-lettered: …`, `not retriable: …`) |
 
 With several runners on one tenant every runner reads every request, and
@@ -692,7 +694,13 @@ An ordinary event run (not a workflow step, not a chat turn) may run as an
    failure, `dead_letter`, `run-finished.error` naming the agent), never run
    with the runner's own token in its place;
 3. else no agent: unchanged behaviour (`agent:<skill>`, admin unless
-   `ESCUREL_RUNNER_AGENT_NARROW=1`).
+   `ESCUREL_RUNNER_AGENT_NARROW=1`) — unless the runner runs with
+   `ESCUREL_RUNNER_DISPATCH=agent`: then such an event is not dispatched at
+   all. It stays in the inbox, unclaimed and unprocessed, for whichever
+   consumer it is meant for (an audit record, a receipt, a request another
+   worker answers). Chat turns, workflow steps and manual starts are not
+   affected. An event's own consumer takes it out of the inbox with
+   `assign_event`.
 
 A page that could not be READ (the gateway did not answer, refused the
 runner's bearer, …) is not a missing one: the runner retries the read with
