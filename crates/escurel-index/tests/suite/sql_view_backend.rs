@@ -370,7 +370,9 @@ async fn refreshing_search_projections_follows_the_source() {
     // A projection is a snapshot: the source change is not visible until a refresh.
     assert_eq!(sql_score(&h, "gadget", &page_id).await, None);
 
-    h.indexer.refresh_search_projections().await.unwrap();
+    let report = h.indexer.refresh_search_projections().await.unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert_eq!(report.captured, vec![("vw_customers__eu".to_owned(), 2)]);
     assert_eq!(sql_score(&h, "gadget", &page_id).await, Some(2.0));
     assert_eq!(sql_score(&h, "widget", &page_id).await, None);
 }
@@ -384,4 +386,20 @@ async fn a_rebuild_refreshes_search_projections() {
     h.indexer.rebuild().await.unwrap();
     assert_eq!(sql_score(&h, "gadget", &page_id).await, Some(1.0));
     assert_eq!(sql_score(&h, "widget", &page_id).await, None);
+}
+
+#[tokio::test]
+async fn a_failed_refresh_keeps_the_previous_projection_and_reports_the_view() {
+    // Search never falls back to the source, so a refresh that cannot read the
+    // source must not empty the projection, and must say so (a silent Ok made
+    // "captured" and "failed" indistinguishable).
+    let h = fresh_harness();
+    let page_id = customers_instance(&h, &["widget alpha", "widget beta"]).await;
+    rewrite_source(&h, &[]); // json_dir with no files: the view cannot be read
+
+    let report = h.indexer.refresh_search_projections().await.unwrap();
+    assert!(report.captured.is_empty(), "{report:?}");
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert_eq!(report.failed[0].0, "vw_customers__eu");
+    assert_eq!(sql_score(&h, "widget", &page_id).await, Some(2.0));
 }

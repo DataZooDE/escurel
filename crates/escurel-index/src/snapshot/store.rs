@@ -131,6 +131,7 @@ impl IndexStore for SingleFileStore {
         // Remote-backend endpoint registry (openapi/mcp): ensure on EVERY boot
         // (idempotent), like the credential registry. Separate canonical input.
         Migrator::ensure_external_endpoints(&conn)?;
+        Migrator::ensure_sql_view_search_text(&conn)?;
         // Skill-pack subscription pins: ensure on EVERY boot (idempotent),
         // like the credential registry. Separate canonical input.
         Migrator::ensure_pack_subscriptions(&conn)?;

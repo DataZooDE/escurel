@@ -18,7 +18,7 @@
 //! a `[[skill::id]]` wikilink (e.g. `event_profile.member`) is resolved to
 //! the linked instance's `credential`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use escurel_md::{PageKind, YamlValue, parse};
 use serde_json::Value;
@@ -352,10 +352,72 @@ impl Indexer {
         if caller.is_admin {
             return Ok(true);
         }
-        let (acl, owner_field, instance_acl_disabled) =
-            self.skill_acl(skill).await?.unwrap_or((None, None, false));
+        let skills: Vec<crate::SkillInfo> = self.skill(skill).await?.into_iter().collect();
+        let ctx = self.acl_context(caller, &skills).await?;
+        self.may_read_instance_in(&ctx, caller, skill, fm).await
+    }
+
+    /// A per-request snapshot of what instance READ decisions need: every
+    /// skill's ACL (from the `skills` catalogue the caller already read), the
+    /// tenant defaults and the caller's groups. Deciding a batch of hits through
+    /// [`Self::may_read_instance_in`] then takes the connection a bounded number
+    /// of times instead of three or more times per hit: behind a busy
+    /// connection (the async runner's polling) each acquisition queues, so
+    /// per-hit lookups made a non-admin search wait once per hit, per lane, per
+    /// query variant. The snapshot is taken once per request; a policy edit
+    /// applies from the next request.
+    pub async fn acl_context(
+        &self,
+        caller: &AclCaller<'_>,
+        skills: &[crate::SkillInfo],
+    ) -> Result<AclContext, IndexerError> {
+        if caller.is_admin {
+            return Ok(AclContext::default());
+        }
+        Ok(AclContext {
+            skills: skills
+                .iter()
+                .map(|s| {
+                    (
+                        s.id.clone(),
+                        (
+                            s.acl.clone(),
+                            s.owner_field.clone(),
+                            s.instance_acl_disabled,
+                        ),
+                    )
+                })
+                .collect(),
+            defaults: self.tenant_acl_defaults().await?,
+            groups: self.caller_groups(caller).await?,
+            owners: tokio::sync::Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// [`Self::may_read_instance`] decided against an [`AclContext`] built for
+    /// the same `caller`. Same policy, same order; a skill missing from the
+    /// context's catalogue has no skill-level ACL, exactly as a skill without a
+    /// page does in [`Self::may_read_instance`].
+    pub async fn may_read_instance_in(
+        &self,
+        ctx: &AclContext,
+        caller: &AclCaller<'_>,
+        skill: &str,
+        fm: &Value,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        let (acl, owner_field, instance_acl_disabled) = ctx
+            .skills
+            .get(skill)
+            .cloned()
+            .unwrap_or((None, None, false));
         if self
-            .read_by_policy(
+            .read_by_policy_with(
+                &ctx.defaults,
+                &ctx.groups,
+                Some(&ctx.owners),
                 caller,
                 acl.as_ref(),
                 owner_field.as_deref(),
@@ -387,19 +449,77 @@ impl Indexer {
         instance_acl_disabled: bool,
         fm: &Value,
     ) -> Result<bool, IndexerError> {
+        let defaults = self.tenant_acl_defaults().await?;
+        let groups = self.caller_groups(caller).await?;
+        self.read_by_policy_with(
+            &defaults,
+            &groups,
+            None,
+            caller,
+            acl,
+            owner_field,
+            instance_acl_disabled,
+            fm,
+        )
+        .await
+    }
+
+    /// [`Self::read_by_policy`] with the tenant defaults and the caller's groups
+    /// already resolved. The structural `owner` group is resolved only when the
+    /// policy names it: `caller_groups` never contains `owner` (reserved), so
+    /// "groups ∪ {owner if owns} intersects policy" is exactly "groups intersect
+    /// policy, or policy names owner and the caller owns it".
+    #[allow(clippy::too_many_arguments)]
+    async fn read_by_policy_with(
+        &self,
+        defaults: &AclPolicy,
+        groups: &HashSet<String>,
+        owners: Option<&OwnerMemo>,
+        caller: &AclCaller<'_>,
+        acl: Option<&AclPolicy>,
+        owner_field: Option<&str>,
+        instance_acl_disabled: bool,
+        fm: &Value,
+    ) -> Result<bool, IndexerError> {
         let instance = if instance_acl_disabled {
             None
         } else {
             instance_acl(fm)
         };
-        let policy = self
-            .resolve_policy(&[instance, acl.cloned()], Verb::Read)
-            .await?;
-        let mut effective = self.caller_groups(caller).await?;
-        if self.owns(caller, owner_field, fm).await? {
-            effective.insert("owner".to_owned());
+        let policy = resolve_policy_with(&[instance, acl.cloned()], Verb::Read, defaults);
+        if intersects(&policy, groups) {
+            return Ok(true);
         }
-        Ok(intersects(&policy, &effective))
+        if !policy.iter().any(|g| g == "owner") {
+            return Ok(false);
+        }
+        let owner = match owners {
+            Some(memo) => {
+                self.resolve_owner_subject_memo(memo, owner_field, fm)
+                    .await?
+            }
+            None => self.resolve_owner_subject(owner_field, fm).await?,
+        };
+        Ok(owner.as_deref() == Some(caller.subject))
+    }
+
+    /// [`Self::resolve_owner_subject`], remembered per request: a wikilink owner
+    /// costs a resolve + expand, and a search's hits often share one owner.
+    async fn resolve_owner_subject_memo(
+        &self,
+        memo: &OwnerMemo,
+        owner_field: Option<&str>,
+        fm: &Value,
+    ) -> Result<Option<String>, IndexerError> {
+        let Some(raw) = owner_field.and_then(|f| fm.get(f)).and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        if let Some(hit) = memo.lock().await.get(raw) {
+            return Ok(hit.clone());
+        }
+        let owner = self.resolve_owner_subject(owner_field, fm).await?;
+        memo.lock().await.insert(raw.to_owned(), owner.clone());
+        Ok(owner)
     }
 
     /// The `acl.read_referenced` grant: a holder may read an instance of this skill when an event
@@ -1318,21 +1438,6 @@ impl Indexer {
         Ok(groups)
     }
 
-    /// Whether `caller` is the resolved owner of the instance whose
-    /// frontmatter is `fm`, under the skill's `owner_field`.
-    async fn owns(
-        &self,
-        caller: &AclCaller<'_>,
-        owner_field: Option<&str>,
-        fm: &Value,
-    ) -> Result<bool, IndexerError> {
-        Ok(self
-            .resolve_owner_subject(owner_field, fm)
-            .await?
-            .as_deref()
-            == Some(caller.subject))
-    }
-
     /// The group list that authorises `verb`, resolved down `chain` in
     /// priority order — most specific block first — per the §4.5
     /// resolution order extended by #351: the INSTANCE's own `acl:` block
@@ -1413,6 +1518,18 @@ impl Indexer {
         // Direct value (e.g. community_member.credential) is the owner sub.
         Ok(Some(raw.to_owned()))
     }
+}
+
+type OwnerMemo = tokio::sync::Mutex<HashMap<String, Option<String>>>;
+
+/// A per-request ACL snapshot for one caller; see [`Indexer::acl_context`].
+/// Empty for an administrator (every decision short-circuits).
+#[derive(Default)]
+pub struct AclContext {
+    skills: HashMap<String, (Option<AclPolicy>, Option<String>, bool)>,
+    defaults: AclPolicy,
+    groups: HashSet<String>,
+    owners: OwnerMemo,
 }
 
 /// The `acl:` block an INSTANCE declares in its own frontmatter (#351),

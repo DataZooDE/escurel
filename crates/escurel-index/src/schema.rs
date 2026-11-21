@@ -278,6 +278,16 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the SQL search lane's projection table (#849) and its `(view, sig)`
+    /// index. Idempotent and run on EVERY connection like the other `ensure_*`,
+    /// so the table exists before any capture or search: a lazily created table
+    /// raced its DDL across connections and made "not captured yet" look like
+    /// "no match". A derived cache, so `rebuild` need not keep it.
+    pub fn ensure_sql_view_search_text(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_24_SQL_VIEW_SEARCH_TEXT)?;
+        Ok(())
+    }
+
     /// Ensure the `pack_subscriptions` table (skill-pack pins, REQ-SUB-01)
     /// exists. Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY
     /// connection like [`Migrator::ensure_external_credentials`]. A SEPARATE
@@ -550,6 +560,7 @@ impl Migrator {
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
         conn.execute_batch(STAGE_6_EVENTS)?;
+        Self::ensure_sql_view_search_text(conn)?;
         // `events.kind` + lineage columns: a no-op here (0004 declares them)
         // — called so `up` and the reopen chain cannot disagree.
         Self::ensure_events_lineage(conn)?;
@@ -693,6 +704,7 @@ const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.s
 const STAGE_21_BRANCH_PAGE_BASES: &str = include_str!("../sql/0020_branch_page_bases.sql");
 const STAGE_22_EMBEDDING_SPACE: &str = include_str!("../sql/0021_embedding_space.sql");
 const STAGE_23_RUN_TRANSCRIPTS: &str = include_str!("../sql/0022_run_transcripts.sql");
+const STAGE_24_SQL_VIEW_SEARCH_TEXT: &str = include_str!("../sql/0023_sql_view_search_text.sql");
 
 #[cfg(test)]
 mod tests {

@@ -1180,6 +1180,7 @@ pub async fn adopt_lake(
     Migrator::ensure_group_members(&conn)?;
     Migrator::ensure_external_credentials(&conn)?;
     Migrator::ensure_external_endpoints(&conn)?;
+    Migrator::ensure_sql_view_search_text(&conn)?;
     Migrator::ensure_pack_subscriptions(&conn)?;
     Migrator::ensure_block_context(&conn)?;
     Migrator::ensure_write_attribution(&conn)?;

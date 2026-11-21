@@ -154,6 +154,7 @@ impl LoaderBuilder {
         Migrator::ensure_group_members(&conn)?;
         Migrator::ensure_external_credentials(&conn)?;
         Migrator::ensure_external_endpoints(&conn)?;
+        Migrator::ensure_sql_view_search_text(&conn)?;
         Migrator::ensure_block_context(&conn)?;
         // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
         // boot (idempotent), so a tenant DB provisioned before the column
@@ -395,6 +396,7 @@ pub async fn transfer(
     Migrator::ensure_group_members(&conn)?;
     Migrator::ensure_external_credentials(&conn)?;
     Migrator::ensure_external_endpoints(&conn)?;
+    Migrator::ensure_sql_view_search_text(&conn)?;
     Migrator::ensure_write_attribution(&conn)?;
     Migrator::ensure_provenance_graph(&conn)?;
     let live = Indexer::new(

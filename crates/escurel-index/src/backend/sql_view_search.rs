@@ -30,12 +30,20 @@ use crate::{Indexer, IndexerError};
 /// projection is partial (logged), so match counts become lower bounds.
 pub const MAX_SEARCH_TEXTS: usize = 100_000;
 
-const DDL: &str = "CREATE TABLE IF NOT EXISTS sql_view_search_text (\
-     view VARCHAR NOT NULL, sig VARCHAR NOT NULL, text VARCHAR NOT NULL, n BIGINT NOT NULL);";
+/// What one [`crate::Indexer::refresh_search_projections`] pass did, per view.
+/// A failed view keeps its previous projection.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectionRefresh {
+    /// Views whose projection was (re)captured, with the distinct texts kept.
+    pub captured: Vec<(String, usize)>,
+    /// Views whose capture failed, with the error.
+    pub failed: Vec<(String, String)>,
+}
 
 /// The skill's `search_text` columns that are safe identifiers (empty when the
-/// skill is not a `sql_view` skill or declares none). Search and capture both
-/// derive the columns here, so their signatures agree.
+/// skill is not a `sql_view` skill or declares none), read from the skill page.
+/// The search lane derives the same columns from a `list_skills` row with
+/// [`columns_of`]; both go through it, so the signatures agree.
 pub(crate) async fn search_columns(indexer: &Indexer, skill: &str) -> Vec<String> {
     indexer
         .skill_backend(skill)
@@ -70,16 +78,18 @@ pub(crate) fn signature(binding_hash: &str, cols: &[String]) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// Capture `view`'s search texts under `sig`, replacing whatever it held. On a
-/// failure (source unreachable) the previous projection is kept.
+/// Capture `view`'s search texts under `sig`, replacing whatever it held, and
+/// return how many distinct texts were kept. On a failure (source unreachable)
+/// the previous projection is kept.
 pub(crate) async fn capture(
     indexer: &Indexer,
     view: &str,
     sig: &str,
     cols: &[String],
-) -> Result<(), IndexerError> {
+) -> Result<usize, IndexerError> {
     if cols.is_empty() || !is_managed_view(view) {
-        return Ok(());
+        tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no searchable columns");
+        return Ok(0);
     }
     let conn = indexer.conn.lock().await.try_clone()?;
     let texts = super::blocking_section(|| capture_on(&conn, view, sig, cols))?;
@@ -91,7 +101,7 @@ pub(crate) async fn capture(
             "sql_view search projection truncated: search match counts are lower bounds"
         );
     }
-    Ok(())
+    Ok(texts)
 }
 
 fn capture_on(
@@ -100,7 +110,6 @@ fn capture_on(
     sig: &str,
     cols: &[String],
 ) -> Result<usize, duckdb::Error> {
-    conn.execute_batch(DDL)?;
     let text = cols
         .iter()
         .map(|c| format!("CAST({} AS VARCHAR)", quote_ident(c)))
@@ -128,51 +137,99 @@ fn capture_on(
 }
 
 /// Source rows of `view` whose search text contains `pattern` (an ILIKE
-/// pattern), read from the local projection only. `0` when none was captured.
-pub(crate) fn match_count(conn: &Connection, view: &str, sig: &str, pattern: &str) -> i64 {
+/// pattern), read from the local projection only. `0` when none was captured;
+/// an error is the caller's to report (it must not read as "no match").
+pub(crate) fn match_count(
+    conn: &Connection,
+    view: &str,
+    sig: &str,
+    pattern: &str,
+) -> Result<i64, duckdb::Error> {
     conn.query_row(
         "SELECT coalesce(sum(n), 0)::BIGINT FROM sql_view_search_text \
          WHERE view = ? AND sig = ? AND text ILIKE ?",
         [view, sig, pattern],
         |r| r.get(0),
     )
-    .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
+    //! In-crate because the neighbour below must hold `Indexer::conn` itself
+    //! (crate-private): that is the contention these tests are about.
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
     use escurel_embed::{Embedder, ZeroEmbedder};
     use escurel_storage::{FsStore, LaneStore};
+    use serde_json::json;
 
     use crate::backend::{SqlConnector, SqlViewBackend, SqlViewBinding};
-    use crate::{Indexer, Migrator};
+    use crate::{AclCaller, Indexer, Migrator};
 
     const SKILLS: usize = 120;
+    const INSTANCES: usize = 12;
+    const HITS: usize = 120;
     const HOLD: Duration = Duration::from_millis(25);
+    /// Well under one wait per skill / instance / hit (each ≥ `HOLD`), well over
+    /// a handful of waits plus the work.
+    const BOUND: Duration = Duration::from_millis(800);
 
-    /// In the lab the async runner keeps the tenant's one connection busy
-    /// (`list_events` holds it ~1.4 s per call, several times a minute). A lane
-    /// that takes the connection once per skill queues behind that neighbour
-    /// once per skill, so an unfiltered search over 56 skills waited for minutes
-    /// while a single-skill one took seconds. Model the neighbour — hold the lock
-    /// for `HOLD`, release, repeat — and require the lanes to take it a bounded
-    /// number of times, independent of the number of skills: per-skill locking
-    /// needs ≥ `SKILLS` waits (≥ 3 s here).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn the_search_lanes_take_the_connection_a_bounded_number_of_times() {
+    struct Fixture {
+        idx: Arc<Indexer>,
+        _dirs: Vec<tempfile::TempDir>,
+    }
+
+    fn fixture() -> Fixture {
         let store_dir = tempfile::TempDir::new().unwrap();
         let db_dir = tempfile::TempDir::new().unwrap();
-        let data_dir = tempfile::TempDir::new().unwrap();
         let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
         let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
         let conn = duckdb::Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
         Migrator::up(&conn).unwrap();
         let idx = Arc::new(Indexer::new(store, embedder, conn, "acme").unwrap());
+        Fixture {
+            idx,
+            _dirs: vec![store_dir, db_dir],
+        }
+    }
 
+    /// The lab's async runner, modelled: take the connection, hold it for
+    /// `HOLD`, release, repeat. Returns once the neighbour has held it once, so
+    /// the measured section always starts against a busy connection.
+    async fn busy_neighbour(idx: &Arc<Indexer>) -> (Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handle = {
+            let (idx, stop) = (Arc::clone(idx), Arc::clone(&stop));
+            tokio::spawn(async move {
+                let mut started = Some(started_tx);
+                while !stop.load(Ordering::SeqCst) {
+                    let guard = idx.conn.lock().await;
+                    if let Some(tx) = started.take() {
+                        let _ = tx.send(());
+                    }
+                    std::thread::sleep(HOLD);
+                    drop(guard);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        started_rx.await.unwrap();
+        (stop, handle)
+    }
+
+    /// In the lab the async runner keeps the tenant's one connection busy
+    /// (`list_events` holds it ~1.4 s per call). A lane that takes the
+    /// connection once per skill or per instance queues behind that neighbour
+    /// each time, so an unfiltered search over 56 skills waited for minutes. The
+    /// lanes must take it a bounded number of times, independent of the number
+    /// of skills and instances (per-skill locking needs ≥ `SKILLS` waits, ≥ 3 s).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_search_lanes_take_the_connection_a_bounded_number_of_times() {
+        let f = fixture();
+        let idx = &f.idx;
         for i in 0..SKILLS {
             idx.update_page(
                 &format!("markdown/skills/s{i}.md"),
@@ -188,52 +245,107 @@ mod tests {
         )
         .await
         .unwrap();
-        std::fs::write(data_dir.path().join("a.json"), br#"{"title":"widget"}"#).unwrap();
+        let data = tempfile::TempDir::new().unwrap();
+        std::fs::write(data.path().join("a.json"), br#"{"title":"widget"}"#).unwrap();
         let binding = SqlViewBinding {
             connector: SqlConnector::JsonDir,
             attach: None,
-            relation: data_dir.path().to_str().unwrap().to_owned(),
+            relation: data.path().to_str().unwrap().to_owned(),
             filter: None,
             project: Default::default(),
             search_text: vec!["title".to_owned()],
         };
-        let m = SqlViewBackend::new(Arc::clone(&idx))
-            .create_instance("customers", &binding, "eu", "# eu")
-            .await
-            .unwrap();
+        let backend = SqlViewBackend::new(Arc::clone(idx));
+        let mut pages = Vec::new();
+        for i in 0..INSTANCES {
+            let m = backend
+                .create_instance("customers", &binding, &format!("eu{i}"), "# eu")
+                .await
+                .unwrap();
+            pages.push(m.page_id);
+        }
+        let skills = idx.list_skills().await.unwrap();
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let neighbour = {
-            let (idx, stop) = (Arc::clone(&idx), Arc::clone(&stop));
-            tokio::spawn(async move {
-                while !stop.load(Ordering::SeqCst) {
-                    let guard = idx.conn.lock().await;
-                    std::thread::sleep(HOLD);
-                    drop(guard);
-                    tokio::task::yield_now().await;
-                }
-            })
-        };
-        tokio::time::sleep(HOLD).await;
-
+        let (stop, neighbour) = busy_neighbour(idx).await;
         let t = Instant::now();
         let sql = idx
-            .sql_view_search_candidates("widget", None)
+            .sql_view_search_candidates_with("widget", None, &skills)
             .await
             .unwrap();
-        let rows = idx.rows_search_candidates("widget", None).await.unwrap();
+        let rows = idx
+            .rows_search_candidates_with("widget", None, &skills)
+            .await
+            .unwrap();
         let elapsed = t.elapsed();
         stop.store(true, Ordering::SeqCst);
         neighbour.await.unwrap();
 
-        assert_eq!(
-            sql.iter().map(|h| h.page_id.as_str()).collect::<Vec<_>>(),
-            [m.page_id.as_str()]
-        );
+        let mut found: Vec<String> = sql.into_iter().map(|h| h.page_id).collect();
+        found.sort();
+        pages.sort();
+        assert_eq!(found, pages);
         assert!(rows.is_empty());
         assert!(
-            elapsed < Duration::from_millis(800),
-            "lanes took {elapsed:?} behind a busy connection ({SKILLS} skills, {HOLD:?} holds)"
+            elapsed < BOUND,
+            "lanes took {elapsed:?} behind a busy connection \
+             ({SKILLS} skills, {INSTANCES} instances, {HOLD:?} holds)"
+        );
+    }
+
+    /// The same contention on the ACL filter: for a non-admin caller every hit
+    /// used to cost three or more acquisitions (the skill's ACL, the tenant
+    /// defaults, the caller's groups), per lane, per query variant. Decided
+    /// against one `AclContext`, a batch of hits takes a bounded number.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn deciding_many_hits_for_a_non_admin_takes_the_connection_a_bounded_number_of_times() {
+        let f = fixture();
+        let idx = &f.idx;
+        idx.update_page(
+            "markdown/skills/note.md",
+            "---\nkind: skill\nid: note\ndescription: x\nacl:\n  read: [team]\n---\n# note\n",
+        )
+        .await
+        .unwrap();
+        let team = vec!["team".to_owned()];
+        let member = AclCaller {
+            subject: "u1",
+            token_groups: &team,
+            ..AclCaller::default()
+        };
+        let outsider = AclCaller {
+            subject: "u2",
+            ..AclCaller::default()
+        };
+        let fm = json!({"id": "n1", "skill": "note"});
+        let skills = idx.list_skills().await.unwrap();
+
+        let (stop, neighbour) = busy_neighbour(idx).await;
+        let t = Instant::now();
+        let ctx = idx.acl_context(&member, &skills).await.unwrap();
+        let out = idx.acl_context(&outsider, &skills).await.unwrap();
+        for _ in 0..HITS {
+            assert!(
+                idx.may_read_instance_in(&ctx, &member, "note", &fm)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !idx.may_read_instance_in(&out, &outsider, "note", &fm)
+                    .await
+                    .unwrap()
+            );
+        }
+        let elapsed = t.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        neighbour.await.unwrap();
+
+        // Same answers as the one-hit path.
+        assert!(idx.may_read_instance(&member, "note", &fm).await.unwrap());
+        assert!(!idx.may_read_instance(&outsider, "note", &fm).await.unwrap());
+        assert!(
+            elapsed < BOUND,
+            "{} decisions took {elapsed:?} behind a busy connection ({HOLD:?} holds)",
+            2 * HITS
         );
     }
 }

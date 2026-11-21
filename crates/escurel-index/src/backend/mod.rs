@@ -22,6 +22,7 @@ pub mod rows;
 pub mod rows_write;
 mod sql_view;
 mod sql_view_search;
+pub use sql_view_search::ProjectionRefresh;
 
 /// Run a synchronous, possibly long section (a source query or ATTACH that blocks on the network)
 /// without occupying the async runtime: on a multi-thread runtime other tasks are moved off this
@@ -264,7 +265,19 @@ impl Indexer {
         q: &str,
         skill_filter: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
-        sql_view::search_candidates(self, q, skill_filter).await
+        let skills = self.list_skills().await?;
+        sql_view::search_candidates(self, q, skill_filter, &skills).await
+    }
+
+    /// [`Self::sql_view_search_candidates`] over a catalogue the caller already
+    /// read (`list_skills`), so one search reads it once for every lane.
+    pub async fn sql_view_search_candidates_with(
+        &self,
+        q: &str,
+        skill_filter: Option<&str>,
+        skills: &[crate::SkillInfo],
+    ) -> Result<Vec<SearchHit>, IndexerError> {
+        sql_view::search_candidates(self, q, skill_filter, skills).await
     }
 
     /// Re-capture the SQL lane's local search projection of every `sql_view`
@@ -272,7 +285,9 @@ impl Indexer {
     /// source, so a source change becomes searchable after this runs. Called by
     /// `create_instance` (that instance), `rebuild`, and in the background after a
     /// writer boot. Best-effort per view.
-    pub async fn refresh_search_projections(&self) -> Result<(), IndexerError> {
+    pub async fn refresh_search_projections(
+        &self,
+    ) -> Result<sql_view_search::ProjectionRefresh, IndexerError> {
         sql_view::refresh_search_projections(self).await
     }
 
