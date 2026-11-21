@@ -9,6 +9,13 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 ## Unreleased
 
 Fixed:
+- **A member of `ESCUREL_SKILL_ADMIN_GROUPS` accepts a changeset that adds skills.** The skill-page rule (#847) let
+  the named groups write skill pages, but the skill-authority gate (v2026.11.13) still granted authority keys
+  (`acl`, `autonomy`, …) only to `escurel:admin` or the stored page's `acl.update`. A new skill has no stored page,
+  so promoting its create draft was refused with `-32003 authority_keys_need_admin` while the changes of existing
+  skills in the same release landed. A person in a named group now changes authority keys as an admin does (also on
+  an existing skill whose `acl.update` does not name the group). Machine callers are still never granted, and `*`
+  grants no authority keys.
 - **An unfiltered `search` no longer takes the tenant's connection once per skill.** The rows lane and the
   "not searched: REST/MCP-backed skills" hint re-read every skill page (`rows_source` / `remote_rows::source`) under
   the connection lock, and the SQL lane took it three times per `sql_view` instance. Behind a busy neighbour (in the

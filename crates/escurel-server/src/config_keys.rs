@@ -285,7 +285,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_SKILL_ADMIN_GROUPS",
         component: "Server",
         default: "— (`escurel:admin` only)",
-        doc: "who may write a SKILL page (`markdown/skills/*`, or any page declaring `kind: skill`) and promote a draft of one: `escurel:admin`, or a person in one of these comma-separated groups (e.g. `portfolio:tenant-admin`). `*` = every caller the rest of the write ACL allows (the behaviour before v2026.11.20). Proposing (`create_draft`) stays open. Part of the write ACL: `ESCUREL_WRITE_ACL=off` skips it, `log` warns. Boot fails on `*` mixed with groups or on a structural group",
+        doc: "who may write a SKILL page (`markdown/skills/*`, or any page declaring `kind: skill`) and promote a draft of one: `escurel:admin`, or a person in one of these comma-separated groups (e.g. `portfolio:tenant-admin`). `*` = every caller the rest of the write ACL allows (the behaviour before v2026.11.20). A person in a named group also changes a skill's authority keys (`acl`, `autonomy`, …), so a new skill that sets them is theirs; `*` grants no authority keys. Proposing (`create_draft`) stays open. Part of the write ACL: `ESCUREL_WRITE_ACL=off` skips it, `log` warns. Boot fails on `*` mixed with groups or on a structural group",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_ADMIN_ROLE_CLAIM",
