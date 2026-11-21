@@ -412,3 +412,147 @@ async fn a_normal_query_is_unaffected_by_the_bound() {
         .expect("a normal query must not be interrupted");
     assert!(!out.rows.is_empty(), "{out:?}");
 }
+
+// ── Authored SQL reaches only its target (#854) ──────────────────────────
+//
+// `query_instance` checks the caller may read the TARGET, then runs the
+// authored SQL on the indexer's own connection — the one that also holds
+// `external_credentials` (plaintext DSNs), every other instance's `vw_` view,
+// `pages`, the search projection, and DuckDB's file readers. The ACL check was
+// about the target; the SQL could name anything else. These pin the gate: a
+// statement is accepted only when every relation it reads is the target view
+// or one of its own CTEs, and every table function is a pure generator.
+
+/// A query page `gate-<n>` over the public `sales::eu` target with `sql`.
+fn gate_page(n: usize, sql: &str) -> (&'static str, &'static str) {
+    let path: &'static str =
+        Box::leak(format!("markdown/instances/query/gate-{n}.md").into_boxed_str());
+    let body = format!(
+        "---\nkind: instance\nskill: query\nid: gate-{n}\n\
+         target: \"[[sales::eu]]\"\n\
+         sql: {}\n---\n# gate-{n}\n",
+        serde_json::to_string(sql).unwrap()
+    );
+    (path, Box::leak(body.into_boxed_str()))
+}
+
+async fn gate_harness() -> Harness {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_QUERY, SKILL_SALES, SKILL_SECRET]).await;
+    materialise_sales(&h, "sales", "eu").await;
+    materialise_sales(&h, "secret_sales", "eu").await;
+    h.indexer
+        .register_credential(
+            "crm_pg",
+            "postgres",
+            "postgres://u:hunter2@db/crm",
+            Some("root"),
+        )
+        .await
+        .unwrap();
+    h
+}
+
+#[tokio::test]
+async fn authored_sql_cannot_read_beyond_its_target() {
+    let h = gate_harness().await;
+    let refused = [
+        "SELECT e.secret FROM {{target}} CROSS JOIN external_credentials e",
+        "SELECT secret FROM main.external_credentials, {{target}}",
+        "SELECT (SELECT max(secret) FROM external_credentials) AS s FROM {{target}}",
+        "SELECT * FROM {{target}} WHERE category IN (SELECT secret FROM external_credentials)",
+        "WITH c AS (SELECT secret FROM external_credentials) SELECT * FROM {{target}}, c",
+        "SELECT s.* FROM {{target}}, vw_secret_sales__eu s",
+        "SELECT x.text FROM {{target}}, sql_view_search_text x",
+        "SELECT p.page_id FROM {{target}}, pages p",
+        "SELECT * FROM {{target}}, read_text('/etc/hostname')",
+        "SELECT * FROM {{target}}, read_json_auto('/etc/hostname')",
+        "SELECT * FROM {{target}}, '/etc/hostname'",
+        "SELECT * FROM {{target}}, duckdb_secrets()",
+        "SELECT * FROM {{target}}, duckdb_tables()",
+        "SELECT * FROM {{target}}, query_table('external_credentials')",
+        "SELECT * FROM {{target}}, query('SELECT secret FROM external_credentials')",
+        "SELECT getenv('HOME') AS h FROM {{target}}",
+        "SELECT current_setting('threads') AS t FROM {{target}}",
+        "COPY (SELECT * FROM {{target}}) TO '/tmp/escurel-gate-854.csv'",
+        "SELECT 1 FROM {{target}}; DELETE FROM pages",
+        "DELETE FROM pages WHERE page_id IN (SELECT category FROM {{target}})",
+        // A CTE is visible only below the query that declares it: a sibling
+        // `pages` is the real table.
+        "SELECT p.page_id FROM {{target}}, (WITH pages AS (SELECT 1 AS x) SELECT * FROM pages) a, pages p",
+        "SELECT category FROM {{target}} UNION ALL SELECT secret FROM external_credentials",
+        "FROM external_credentials, {{target}} SELECT secret",
+        "SELECT * FROM {{target}}, (SUMMARIZE external_credentials)",
+        "SELECT * FROM {{target}} PIVOT (sum(amount) FOR category IN ('hw', 'sw'))",
+        "SELECT * FROM {{target}}, system.main.duckdb_secrets()",
+        "SELECT main.getenv('HOME') AS h FROM {{target}}",
+    ];
+    for (n, sql) in refused.iter().enumerate() {
+        seed(&h, &[gate_page(n, sql)]).await;
+        let r = h
+            .indexer
+            .query_instance(&format!("gate-{n}"), &args(&[]), None, &analyst("reader"))
+            .await;
+        match r {
+            Err(QueryError::SqlNotAllowed { .. }) => {}
+            Err(other) => panic!("{sql}\n  refused for the wrong reason: {other}"),
+            Ok(out) => panic!(
+                "{sql}\n  ran and returned {} rows: {:?}",
+                out.rows.len(),
+                out.rows.first()
+            ),
+        }
+    }
+    assert!(
+        !std::path::Path::new("/tmp/escurel-gate-854.csv").exists(),
+        "COPY ran"
+    );
+    // The multi-statement and DELETE cases left the corpus alone.
+    let still = h
+        .indexer
+        .query_instance(
+            "sales-by-category",
+            &args(&[("min", json!(0))]),
+            None,
+            &analyst("reader"),
+        )
+        .await;
+    assert!(
+        matches!(still, Err(QueryError::NotFound { .. })) || still.is_ok(),
+        "pages table damaged: {still:?}"
+    );
+}
+
+#[tokio::test]
+async fn authored_sql_over_its_target_keeps_working() {
+    let h = gate_harness().await;
+    // The shapes the lab's report pages use: CTEs (also shadowing nothing),
+    // self-joins, range()/generate_series()/unnest() generators, VALUES,
+    // window functions, subqueries over the target, and `:param` binds.
+    let allowed = [
+        "SELECT category, SUM(amount)::BIGINT AS total FROM {{target}} GROUP BY category ORDER BY category",
+        "WITH o AS (SELECT * FROM {{target}}), m AS (SELECT m FROM range(1, 3) AS t(m)) \
+         SELECT count(*)::BIGINT AS n FROM o, m JOIN {{target}} t2 ON true",
+        "SELECT g::BIGINT AS g FROM generate_series(1, 2) AS s(g), (SELECT 1 FROM {{target}} LIMIT 1) x",
+        "SELECT unnest([1, 2])::BIGINT AS u FROM {{target}} LIMIT 2",
+        "SELECT v.a FROM (VALUES (1), (2)) AS v(a), (SELECT max(amount) AS mx FROM {{target}}) t",
+        "SELECT category, row_number() OVER (ORDER BY amount) AS r FROM {{target}}",
+        "SELECT * FROM {{target}} WHERE amount > (SELECT avg(amount) FROM {{target}})",
+        "SELECT EXTRACT(year FROM DATE '2026-01-01')::BIGINT AS y FROM {{target}} LIMIT 1",
+        // A CTE may shadow an internal name: it is the CTE that is read.
+        "WITH pages AS (SELECT * FROM {{target}}) SELECT count(*)::BIGINT AS n FROM pages",
+        "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 3) \
+         SELECT i::BIGINT AS i FROM r, (SELECT 1 FROM {{target}} LIMIT 1) t",
+        "SELECT category, list(amount ORDER BY amount) AS amounts, [1, 2] AS l, {'a': 1} AS s \
+         FROM {{target}} GROUP BY category",
+        "SELECT t.category FROM {{target}} t, LATERAL (SELECT t.amount * 2 AS d) x",
+    ];
+    for (n, sql) in allowed.iter().enumerate() {
+        let n = 100 + n;
+        seed(&h, &[gate_page(n, sql)]).await;
+        h.indexer
+            .query_instance(&format!("gate-{n}"), &args(&[]), None, &analyst("reader"))
+            .await
+            .unwrap_or_else(|e| panic!("{sql}\n  refused: {e}"));
+    }
+}

@@ -134,6 +134,11 @@ pub enum QueryError {
     #[error("[[query::{id}]] caller is not authorised to read target {target}")]
     Forbidden { id: String, target: String },
 
+    /// The authored SQL reads something other than its target view, its own
+    /// CTEs and pure generator functions, or is not a single SELECT (#854).
+    #[error("[[query::{id}]] sql is not allowed: {reason}")]
+    SqlNotAllowed { id: String, reason: String },
+
     #[error(
         "[[query::{id}]] sql contains an unsupported placeholder {placeholder:?} \
          (only {{{{target}}}} is allowed)"
@@ -326,6 +331,7 @@ impl Indexer {
             &conn,
             query_id,
             &sql,
+            view,
             &declared,
             args,
             Some(MAX_RESULT_ROWS),
@@ -582,6 +588,7 @@ fn execute_bound_query(
     conn: &duckdb::Connection,
     id: &str,
     sql: &str,
+    target_view: &str,
     declared: &[DeclaredParam],
     args: &serde_json::Map<String, serde_json::Value>,
     row_cap: Option<usize>,
@@ -606,6 +613,16 @@ fn execute_bound_query(
 
     // Substitute `:name` → `?` and build the positional value vector.
     let (rewritten_sql, bind_order) = rewrite_named_params(sql);
+
+    // The statement may read only its target (#854). Checked on the exact text
+    // that is prepared, and BEFORE `prepare`: preparing multi-statement text
+    // already runs every statement but the last.
+    crate::query_gate::check(conn, &rewritten_sql, target_view).map_err(|reason| {
+        QueryError::SqlNotAllowed {
+            id: id.to_owned(),
+            reason,
+        }
+    })?;
     let mut bound_values: Vec<DuckValue> = Vec::with_capacity(bind_order.len());
     for name in &bind_order {
         let v = args.get(name).cloned().unwrap_or(serde_json::Value::Null);

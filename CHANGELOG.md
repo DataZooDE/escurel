@@ -8,6 +8,18 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Security:
+- **An authored query page reads only its target (#854).** `query_instance` checked that the caller may read the
+  target instance and then ran the page's SQL on the indexer's own connection, which also holds
+  `external_credentials`. A caller who may write a `skill: query` instance and read any one sql_view instance could
+  therefore read registered source credentials (plaintext DSNs), other instances' `vw_` views (including
+  owner-private ones), `pages`, the search projection, and local or remote files through DuckDB's readers. The
+  statement is now checked against DuckDB's own parse tree before it is prepared, default-deny: one `SELECT` that
+  reads only the target view, its own CTEs and the `range` / `generate_series` / `unnest` generators, with no
+  state-reading function. Anything else is refused with `sql_not_allowed` and the reason. Every lab report query
+  passes unchanged; a query that joins a second table, uses `PIVOT` or reads a file now fails and must be rewritten
+  over its target. **Upgrade:** move the gateway and the runner together, as for v2026.11.21.
+
 Fixed:
 - **A member of `ESCUREL_SKILL_ADMIN_GROUPS` accepts a changeset that adds skills.** The skill-page rule (#847) let
   the named groups write skill pages, but the skill-authority gate (v2026.11.13) still granted authority keys
