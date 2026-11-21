@@ -468,10 +468,21 @@ pub(crate) async fn search_candidates(
 
     // 2. Per instance: match q against the LOCAL projection of the skill's
     //    search_text columns (never the source: see `sql_view_search`).
+    //    The columns come from ONE catalogue read and every count runs under ONE
+    //    lock: per-instance lookups each queue behind a busy connection.
     let pattern = format!("%{q}%");
-    let mut hits = Vec::new();
+    let catalogue: std::collections::HashMap<String, Vec<String>> = indexer
+        .list_skills()
+        .await?
+        .into_iter()
+        .map(|s| (s.id, super::sql_view_search::columns_of(&s.backend)))
+        .collect();
+    let mut keyed = Vec::with_capacity(rows.len());
     for row in rows {
-        let cols = super::sql_view_search::search_columns(indexer, &row.skill).await;
+        let cols = match catalogue.get(&row.skill) {
+            Some(c) => c.clone(),
+            None => super::sql_view_search::search_columns(indexer, &row.skill).await,
+        };
         if cols.is_empty() || !is_managed_view(&row.view) {
             continue;
         }
@@ -479,10 +490,20 @@ pub(crate) async fn search_candidates(
             .as_str()
             .unwrap_or_default();
         let sig = super::sql_view_search::signature(binding_hash, &cols);
-        let count = {
-            let conn = indexer.conn.lock().await;
-            super::sql_view_search::match_count(&conn, &row.view, &sig, &pattern)
-        };
+        keyed.push((row, sig));
+    }
+    let counted: Vec<(Row, i64)> = {
+        let conn = indexer.conn.lock().await;
+        keyed
+            .into_iter()
+            .map(|(row, sig)| {
+                let n = super::sql_view_search::match_count(&conn, &row.view, &sig, &pattern);
+                (row, n)
+            })
+            .collect()
+    };
+    let mut hits = Vec::new();
+    for (row, count) in counted {
         if count > 0 {
             hits.push(crate::search::SearchHit {
                 page_id: row.page_id,

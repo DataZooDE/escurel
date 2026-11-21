@@ -2020,6 +2020,11 @@ pub(crate) async fn tool_search(
             if a.skill.as_deref().is_some_and(|f| f != skill.id) {
                 continue;
             }
+            // Only a remote `rows` skill can be one; decide from the catalogue row so a
+            // search does not re-read every skill page under the connection lock.
+            if skill.backend.rows.is_none() || skill.backend.remote.is_none() {
+                continue;
+            }
             if matches!(
                 crate::remote_rows::source(indexer, &skill.id).await,
                 Ok(Some(_))

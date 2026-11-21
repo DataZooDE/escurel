@@ -567,6 +567,12 @@ impl Indexer {
             if skill_filter.is_some_and(|f| f != skill.id) || hits.len() >= ROWS_SEARCH_TOTAL {
                 continue;
             }
+            // Decide from the catalogue row already in hand: `rows_source` re-reads the skill
+            // page under the connection lock, and doing that for every skill made one search
+            // queue behind a busy connection once per skill (see `sql_view_search`).
+            if skill.backend.rows.is_none() || skill.backend.remote.is_some() {
+                continue;
+            }
             let Ok(Some(src)) = self.rows_source(&skill.id).await else {
                 continue;
             };
