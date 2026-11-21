@@ -2787,14 +2787,18 @@ pub(crate) fn format_vector_literal(v: &[f32]) -> String {
 }
 
 /// The id of the skill `content` defines, when it is a skill page with a
-/// `backend:` block (the only kind whose instances have search projections).
+/// `backend: {kind: sql_view}` block (the only kind whose instances have search
+/// projections).
 fn sql_view_skill_id(content: &str) -> Option<String> {
     let parsed = escurel_md::parse(content).ok()?;
     if parsed.frontmatter.page_kind != escurel_md::PageKind::Skill {
         return None;
     }
     let fields = &parsed.frontmatter.fields;
-    fields.get("backend")?;
+    let kind = fields.get("backend")?.get("kind")?.as_str()?;
+    if kind != "sql_view" {
+        return None;
+    }
     fields.get("id")?.as_str().map(str::to_owned)
 }
 
