@@ -436,7 +436,10 @@ refused, never run as that agent nor on a wider token. Which skills an agent
 may run as is the admin's decision, made on the agent page.
 
 A **new** skill page carrying any authority key, and a stored skill without
-`acl.update`, are therefore an admin's. A machine caller (run, narrowed
+`acl.update`, are therefore an admin's, or a skill administrator's: a person
+in a group of `ESCUREL_SKILL_ADMIN_GROUPS` changes authority keys as an
+`escurel:admin` does (so a tenant administrator accepts a release that adds
+skills); `*` grants no authority keys. A machine caller (run, narrowed
 agent, delegated `act` token) never changes them, admin role or not — its
 skill-page edits are held as drafts anyway. `description`, `summary`,
 `fields`, the body and every other key stay free under the ordinary write rule.
