@@ -408,6 +408,7 @@ pub(crate) async fn search_candidates(
     indexer: &Indexer,
     q: &str,
     skill_filter: Option<&str>,
+    skills: &[crate::SkillInfo],
 ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
     use escurel_md::PageKind;
 
@@ -467,21 +468,26 @@ pub(crate) async fn search_candidates(
     };
 
     // 2. Per instance: match q against the LOCAL projection of the skill's
-    //    search_text columns (never the source: see `sql_view_search`).
-    //    The columns come from ONE catalogue read and every count runs under ONE
-    //    lock: per-instance lookups each queue behind a busy connection.
+    //    search_text columns (never the source: see `sql_view_search`). The
+    //    columns come from the caller's catalogue and every count runs under ONE
+    //    lock: a per-instance lookup would queue behind a busy connection once
+    //    per instance.
     let pattern = format!("%{q}%");
-    let catalogue: std::collections::HashMap<String, Vec<String>> = indexer
-        .list_skills()
-        .await?
-        .into_iter()
-        .map(|s| (s.id, super::sql_view_search::columns_of(&s.backend)))
+    let catalogue: std::collections::HashMap<&str, Vec<String>> = skills
+        .iter()
+        .map(|s| {
+            (
+                s.id.as_str(),
+                super::sql_view_search::columns_of(&s.backend),
+            )
+        })
         .collect();
     let mut keyed = Vec::with_capacity(rows.len());
     for row in rows {
-        let cols = match catalogue.get(&row.skill) {
-            Some(c) => c.clone(),
-            None => super::sql_view_search::search_columns(indexer, &row.skill).await,
+        let Some(cols) = catalogue.get(row.skill.as_str()) else {
+            tracing::debug!(target: "escurel", skill = %row.skill, page = %row.page_id,
+                "sql_view instance of a skill not in the catalogue: no SQL candidate");
+            continue;
         };
         if cols.is_empty() || !is_managed_view(&row.view) {
             continue;
@@ -489,19 +495,27 @@ pub(crate) async fn search_candidates(
         let binding_hash = row.frontmatter["backend_ref"]["binding_hash"]
             .as_str()
             .unwrap_or_default();
-        let sig = super::sql_view_search::signature(binding_hash, &cols);
+        let sig = super::sql_view_search::signature(binding_hash, cols);
         keyed.push((row, sig));
     }
+    let mut failure: Option<duckdb::Error> = None;
     let counted: Vec<(Row, i64)> = {
         let conn = indexer.conn.lock().await;
         keyed
             .into_iter()
             .map(|(row, sig)| {
-                let n = super::sql_view_search::match_count(&conn, &row.view, &sig, &pattern);
+                let n = super::sql_view_search::match_count(&conn, &row.view, &sig, &pattern)
+                    .unwrap_or_else(|e| {
+                        failure.get_or_insert(e);
+                        0
+                    });
                 (row, n)
             })
             .collect()
     };
+    if let Some(e) = failure {
+        tracing::warn!(target: "escurel", error = %e, "sql_view search projection unreadable: SQL lane incomplete");
+    }
     let mut hits = Vec::new();
     for (row, count) in counted {
         if count > 0 {
@@ -1171,19 +1185,24 @@ pub(crate) async fn reconstruct_views(indexer: &Indexer) -> Result<(), crate::In
 
 /// Re-capture every `sql_view` instance's search projection from its view
 /// (see `sql_view_search`). Best-effort per view: one whose source is
-/// unreachable keeps its previous projection and is logged.
+/// unreachable keeps its previous projection and is reported (and logged).
 pub(crate) async fn refresh_search_projections(
     indexer: &Indexer,
-) -> Result<(), crate::IndexerError> {
+) -> Result<super::sql_view_search::ProjectionRefresh, crate::IndexerError> {
+    let mut report = super::sql_view_search::ProjectionRefresh::default();
     for (_page_id, skill, view, backend_ref) in enumerate_sql_view_overlays(indexer).await? {
         let cols = super::sql_view_search::search_columns(indexer, &skill).await;
         let hash = backend_ref["binding_hash"].as_str().unwrap_or_default();
         let sig = super::sql_view_search::signature(hash, &cols);
-        if let Err(e) = super::sql_view_search::capture(indexer, &view, &sig, &cols).await {
-            tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
+        match super::sql_view_search::capture(indexer, &view, &sig, &cols).await {
+            Ok(texts) => report.captured.push((view, texts)),
+            Err(e) => {
+                tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
+                report.failed.push((view, e.to_string()));
+            }
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 /// Re-probe every SQL-view binding and compare the current schema

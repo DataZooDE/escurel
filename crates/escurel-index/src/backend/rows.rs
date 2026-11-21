@@ -561,9 +561,22 @@ impl Indexer {
         q: &str,
         skill_filter: Option<&str>,
     ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
+        let skills = self.list_skills().await?;
+        self.rows_search_candidates_with(q, skill_filter, &skills)
+            .await
+    }
+
+    /// [`Self::rows_search_candidates`] over a catalogue the caller already read
+    /// (`list_skills`), so one search reads it once for every lane.
+    pub async fn rows_search_candidates_with(
+        &self,
+        q: &str,
+        skill_filter: Option<&str>,
+        skills: &[crate::SkillInfo],
+    ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
         use crate::search::SearchHit;
         let mut hits: Vec<SearchHit> = Vec::new();
-        for skill in self.list_skills().await? {
+        for skill in skills {
             if skill_filter.is_some_and(|f| f != skill.id) || hits.len() >= ROWS_SEARCH_TOTAL {
                 continue;
             }

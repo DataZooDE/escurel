@@ -1923,6 +1923,20 @@ pub(crate) async fn tool_search(
     // BEFORE it enters the fusion. Deterministic ACL drops owner-private
     // hits the caller does not own (admin bypasses); skill pages are the
     // public catalogue.
+    //
+    // The catalogue and the caller's ACL snapshot are read ONCE per search and
+    // shared by every lane and variant: per-hit / per-skill lookups each take
+    // the tenant's connection and queue behind whatever holds it (lab: the async
+    // runner's polling), which made a search wait once per hit, per lane, per
+    // variant.
+    let skills = indexer
+        .list_skills()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("search skills: {e}")))?;
+    let acl = indexer
+        .acl_context(&caller, &skills)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?;
     let mut lanes: Vec<Vec<escurel_index::SearchHit>> = Vec::with_capacity(variants.len() * 2);
     for q in &variants {
         let native = indexer
@@ -1939,24 +1953,24 @@ pub(crate) async fn tool_search(
             )
             .await
             .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
-        lanes.push(acl_filter_hits(indexer, &caller, native).await?);
+        lanes.push(acl_filter_hits(indexer, &acl, &caller, native).await?);
 
         if sql_lane_enabled {
             let candidates = indexer
-                .sql_view_search_candidates(q, a.skill.as_deref())
+                .sql_view_search_candidates_with(q, a.skill.as_deref(), &skills)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
-            let sql_allowed = acl_filter_hits(indexer, &caller, candidates).await?;
+            let sql_allowed = acl_filter_hits(indexer, &acl, &caller, candidates).await?;
             if !sql_allowed.is_empty() {
                 lanes.push(sql_allowed);
             }
             // The ROWS lane: rows of `instances: rows` skills match on their key and `filterable:`
             // columns. Candidates only, ACL-filtered per row BEFORE fusion like every other lane.
             let rows = indexer
-                .rows_search_candidates(q, a.skill.as_deref())
+                .rows_search_candidates_with(q, a.skill.as_deref(), &skills)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search rows lane: {e}")))?;
-            let rows_allowed = acl_filter_hits(indexer, &caller, rows).await?;
+            let rows_allowed = acl_filter_hits(indexer, &acl, &caller, rows).await?;
             if !rows_allowed.is_empty() {
                 lanes.push(rows_allowed);
             }
@@ -2012,11 +2026,7 @@ pub(crate) async fn tool_search(
     // Say so: silent emptiness reads as "no such record".
     if sql_lane_enabled {
         let mut unsearched = Vec::new();
-        for skill in indexer
-            .list_skills()
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("search skills: {e}")))?
-        {
+        for skill in &skills {
             if a.skill.as_deref().is_some_and(|f| f != skill.id) {
                 continue;
             }
@@ -2029,7 +2039,7 @@ pub(crate) async fn tool_search(
                 crate::remote_rows::source(indexer, &skill.id).await,
                 Ok(Some(_))
             ) {
-                unsearched.push(skill.id);
+                unsearched.push(skill.id.clone());
             }
         }
         if !unsearched.is_empty() {
@@ -2049,6 +2059,7 @@ pub(crate) async fn tool_search(
 /// inside `may_read_instance` (deny to non-admins).
 pub(super) async fn acl_filter_hits(
     indexer: &Indexer,
+    acl: &escurel_index::AclContext,
     caller: &AclCaller<'_>,
     hits: Vec<escurel_index::SearchHit>,
 ) -> Result<Vec<escurel_index::SearchHit>, JsonRpcError> {
@@ -2056,7 +2067,7 @@ pub(super) async fn acl_filter_hits(
     for h in hits {
         if h.page_kind == PageKind::Instance
             && !indexer
-                .may_read_instance(caller, &h.skill, &h.frontmatter_excerpt)
+                .may_read_instance_in(acl, caller, &h.skill, &h.frontmatter_excerpt)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?
         {

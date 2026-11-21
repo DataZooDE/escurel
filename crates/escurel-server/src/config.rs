@@ -2511,9 +2511,11 @@ impl EscurelConfig {
                             tokio::spawn(async move {
                                 let t = std::time::Instant::now();
                                 match warm.refresh_search_projections().await {
-                                    Ok(()) => tracing::info!(
+                                    Ok(report) => tracing::info!(
                                         target: "escurel",
                                         elapsed_ms = t.elapsed().as_millis() as u64,
+                                        captured = report.captured.len(),
+                                        failed = report.failed.len(),
                                         "writer boot: sql_view search projections captured"
                                     ),
                                     Err(e) => tracing::warn!(

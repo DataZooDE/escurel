@@ -14,7 +14,22 @@ Fixed:
   the connection lock, and the SQL lane took it three times per `sql_view` instance. Behind a busy neighbour (in the
   lab the async runner's `list_events` holds it ~1.4 s per call) each acquisition queued, so a search over 56 skills
   did not return in minutes while a single-skill one took ~7 s. The lanes now decide from one `list_skills` read
-  and count every `sql_view` match under one lock. No behaviour change.
+  and count every `sql_view` match under one lock (#853).
+- **A non-admin `search` no longer takes the connection three or more times per hit.** The fail-closed ACL filter
+  looked up the hit's skill ACL, the tenant defaults and the caller's groups for every hit, per lane, per query
+  variant — the path every agent and end-user token takes (the lab measurements behind #853 used an admin token,
+  which bypasses it). A search now reads the catalogue and the caller's ACL snapshot once (`Indexer::acl_context`,
+  `may_read_instance_in`) and shares them across lanes and variants; an `owner_field` owner is resolved only when
+  the policy names `owner`, and once per request. Decisions are unchanged; a policy edit applies from the next
+  request rather than mid-search.
+- **The SQL lane's projection table is part of the schema.** `sql_view_search_text` (with a `(view, sig)` index) is
+  created by `Migrator` on every open instead of lazily by the first capture, whose DDL could race across
+  connections. A projection read error is logged instead of reading as "no match", and
+  `refresh_search_projections` returns a per-view report (`ProjectionRefresh`: captured / failed).
+
+Corrections to #849's entry (v2026.11.21): match counts are not strictly unchanged. Columns are matched as one
+`chr(31)`-joined text, so an unescaped `%`/`_` in `q` can match across two columns, rows whose search columns are
+all NULL or empty are not counted, and beyond 100 000 distinct texts per view counts are lower bounds.
 
 ## v2026.11.21 — BREAKING (system skills are namespaced: `escurel-agent`, `escurel-runtime`, `escurel-chat-channel`)
 
