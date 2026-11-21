@@ -403,3 +403,69 @@ async fn a_failed_refresh_keeps_the_previous_projection_and_reports_the_view() {
     assert_eq!(report.failed[0].0, "vw_customers__eu");
     assert_eq!(sql_score(&h, "widget", &page_id).await, Some(2.0));
 }
+
+#[tokio::test]
+async fn editing_a_skills_search_text_recaptures_its_instances() {
+    // The projection is keyed by the searched columns. Changing `search_text` on the
+    // skill page used to leave every instance with a projection under the OLD key
+    // and none under the new one, so the SQL lane went silently empty until a
+    // rebuild or restart.
+    let h = fresh_harness();
+    let page_id = customers_instance(&h, &["widget alpha"]).await; // name = n0
+    assert_eq!(
+        sql_score(&h, "n0", &page_id).await,
+        None,
+        "name is not searched yet"
+    );
+
+    h.indexer
+        .update_page(
+            "markdown/skills/customers.md",
+            &CUSTOMERS_SKILL_TITLE.replace("search_text: [title]", "search_text: [name]"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sql_score(&h, "n0", &page_id).await, Some(1.0));
+    assert_eq!(sql_score(&h, "widget", &page_id).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_racing_a_re_create_never_leaves_the_old_binding_searchable() {
+    // A refresh that read the overlay BEFORE a re-create and published AFTER it
+    // overwrote the new projection with the old key, dropping the instance from
+    // search until restart. Race them repeatedly; the re-created binding must win.
+    let h = fresh_harness();
+    let old_dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(old_dir.path().join("a.json"), br#"{"title":"alpha"}"#).unwrap();
+    let page_id = customers_instance(&h, &["seed"]).await;
+    for round in 0..40 {
+        // Alternate the instance between two sources; the last create wins.
+        let (dir, want, gone) = if round % 2 == 0 {
+            (old_dir.path(), "alpha", "seed")
+        } else {
+            (h.data_dir.path(), "seed", "alpha")
+        };
+        let mut binding = dir_binding(SqlConnector::JsonDir, dir.to_str().unwrap());
+        binding.search_text = vec!["title".to_owned()];
+        let refresh = {
+            let idx = Arc::clone(&h.indexer);
+            tokio::spawn(async move { idx.refresh_search_projections().await })
+        };
+        let create = {
+            let backend = SqlViewBackend::new(Arc::clone(&h.indexer));
+            tokio::spawn(async move {
+                backend
+                    .create_instance("customers", &binding, "eu", "# eu")
+                    .await
+            })
+        };
+        refresh.await.unwrap().unwrap();
+        create.await.unwrap().unwrap();
+        assert_eq!(
+            sql_score(&h, want, &page_id).await,
+            Some(1.0),
+            "round {round}"
+        );
+        assert_eq!(sql_score(&h, gone, &page_id).await, None, "round {round}");
+    }
+}
