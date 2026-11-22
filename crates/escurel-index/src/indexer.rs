@@ -74,7 +74,13 @@ pub struct Indexer {
     /// Each capture derives its key from the CURRENT overlay and skill under
     /// this lock, so the last capture always reflects the latest binding and a
     /// slower, older capture can never publish over it.
-    pub(crate) projection_lock: Mutex<()>,
+    pub(crate) projection_lock: tokio::sync::RwLock<()>,
+    /// One lock per view under [`Self::projection_lock`]: captures of different
+    /// views run at once, captures of the same view are serialised (#855, #860).
+    projection_view_locks: std::sync::Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>,
+    /// The wall-clock budget of ONE sql_view search-projection capture, in ms
+    /// (#855); `0` disables it. A capture scans its whole source.
+    sql_view_capture_timeout_ms: AtomicU64,
     /// Dirty counter for the DuckLake publish loop: bumped once per
     /// committed index mutation ([`Self::update_page`],
     /// [`Self::write_document_blocks`] — the shared tail of
@@ -346,6 +352,12 @@ pub enum IndexerError {
     InvalidExternalSource { reason: &'static str },
     #[error("invalid chat list cursor: {0}")]
     InvalidCursor(String),
+    /// A sql_view search-projection capture ran past its budget (#855).
+    #[error(
+        "the search projection of {view} was not refreshed: its source scan ran past the {secs}s \
+         budget (ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS) and was interrupted; the previous projection is kept"
+    )]
+    CaptureTimedOut { view: String, secs: u64 },
     #[error("crdt error: {0}")]
     Crdt(#[from] escurel_crdt::Error),
     #[error("seed io error at {path}: {source}")]
@@ -398,6 +410,22 @@ pub struct MergeReport {
 }
 
 impl Indexer {
+    /// A connection of its own for a read that may be slow (#858).
+    ///
+    /// The tenant has ONE connection behind a mutex, and every tool queues on
+    /// it. A read of the events or chat tables on a lake or attached-Postgres
+    /// backend is a remote round-trip per catalog lookup (~1.4 s in the lab), so
+    /// running it under the mutex stalls the whole tenant. A clone shares the
+    /// database instance, so it sees every attach and every committed write; the
+    /// mutex is held only for the clone. Writes keep using the shared connection
+    /// under the lock, and they commit before releasing it, so a caller's next
+    /// read sees what it just wrote.
+    pub(crate) async fn read_conn(&self) -> Result<duckdb::Connection, IndexerError> {
+        Ok(self.conn.lock().await.try_clone()?)
+    }
+}
+
+impl Indexer {
     /// Set the wall-clock bound on ONE authored query's execution (#455).
     /// `Duration::ZERO` disables it.
     ///
@@ -407,6 +435,32 @@ impl Indexer {
         let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
         self.query_timeout_ms
             .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The capture lock of one view (see [`Self::projection_lock`]).
+    pub(crate) fn projection_view_lock(&self, view: &str) -> std::sync::Arc<Mutex<()>> {
+        let mut locks = self
+            .projection_view_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::sync::Arc::clone(locks.entry(view.to_owned()).or_default())
+    }
+
+    /// Set the budget of one sql_view search-projection capture (#855).
+    /// `Duration::ZERO` disables it.
+    pub fn set_sql_view_capture_timeout(&self, timeout: std::time::Duration) {
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        self.sql_view_capture_timeout_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The current capture budget; `None` when disabled.
+    #[must_use]
+    pub fn sql_view_capture_timeout(&self) -> Option<std::time::Duration> {
+        let ms = self
+            .sql_view_capture_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then(|| std::time::Duration::from_millis(ms))
     }
 
     /// The current per-query bound; `None` when disabled.
@@ -445,7 +499,12 @@ impl Indexer {
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
             gc_lock: Mutex::new(()),
-            projection_lock: Mutex::new(()),
+            projection_lock: tokio::sync::RwLock::new(()),
+            projection_view_locks: std::sync::Mutex::new(HashMap::new()),
+            sql_view_capture_timeout_ms: AtomicU64::new(
+                u64::try_from(crate::backend::SQL_VIEW_CAPTURE_TIMEOUT.as_millis())
+                    .unwrap_or(u64::MAX),
+            ),
             mutation_epoch: AtomicU64::new(0),
             query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),

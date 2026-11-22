@@ -1136,20 +1136,24 @@ impl Indexer {
             }
         };
 
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> =
-            bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
-        let mut rows: Vec<(EventRow, Option<String>, Option<i64>)> = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                Ok((
-                    event_row_from_row(row)?,
-                    row.get::<_, Option<String>>(13)?,
-                    row.get::<_, Option<i64>>(14)?,
-                ))
-            })?
-            .collect::<duckdb::Result<Vec<_>>>()?;
-        drop(stmt);
+        // Off the tenant lock (#858): on a lake or attached-Postgres backend this
+        // read is a remote round-trip per catalog lookup, and every other tool
+        // would queue behind it.
+        let conn = self.read_conn().await?;
+        let mut rows: Vec<(EventRow, Option<String>, Option<i64>)> =
+            crate::backend::blocking_section(|| -> duckdb::Result<_> {
+                let mut stmt = conn.prepare(&sql)?;
+                let param_refs: Vec<&dyn duckdb::ToSql> =
+                    bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
+                stmt.query_map(param_refs.as_slice(), |row| {
+                    Ok((
+                        event_row_from_row(row)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<i64>>(14)?,
+                    ))
+                })?
+                .collect::<duckdb::Result<Vec<_>>>()
+            })?;
         drop(conn);
 
         let more = rows.len() > limit;
@@ -2092,7 +2096,17 @@ impl Indexer {
         instance: Option<&str>,
         tenant: Option<&str>,
     ) -> Result<Vec<EventInfo>, IndexerError> {
-        let conn = self.conn.lock().await;
+        let conn = self.read_conn().await?;
+        crate::backend::blocking_section(|| self.hydrate_on(&conn, sql, instance, tenant))
+    }
+
+    fn hydrate_on(
+        &self,
+        conn: &duckdb::Connection,
+        sql: &str,
+        instance: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<Vec<EventInfo>, IndexerError> {
         let mut stmt = conn.prepare(sql)?;
         let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
         if let Some(inst) = instance {
@@ -2214,3 +2228,7 @@ fn parse_status_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
                 .map(|n| n.and_utc())
         })
 }
+
+#[cfg(test)]
+#[path = "events_read_lock_tests.rs"]
+mod read_lock_tests;

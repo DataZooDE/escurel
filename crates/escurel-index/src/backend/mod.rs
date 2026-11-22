@@ -66,6 +66,7 @@ pub use rows_write::RowWriteError;
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
+pub use sql_view_search::CAPTURE_TIMEOUT as SQL_VIEW_CAPTURE_TIMEOUT;
 // Crate-internal: `query_instance` allow-lists the `{{target}}` view
 // identifier through the same `vw_`-prefix guard the projection path uses.
 pub use sql_view::SQL_CONNECT_TIMEOUT;
@@ -293,6 +294,16 @@ impl Indexer {
 
     /// [`Self::refresh_search_projections`] for one skill's instances (after
     /// its skill page changed, so its `search_text` may have).
+    /// [`Self::refresh_search_projections`] with up to `concurrency` views
+    /// captured at once (#855), for the post-boot warm-up: one slow source no
+    /// longer delays every view after it.
+    pub async fn refresh_search_projections_concurrent(
+        self: &std::sync::Arc<Self>,
+        concurrency: usize,
+    ) -> Result<sql_view_search::ProjectionRefresh, IndexerError> {
+        sql_view::refresh_search_projections_concurrent(self, concurrency).await
+    }
+
     pub async fn refresh_search_projections_for_skill(
         &self,
         skill: &str,
