@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.34.0 — system skills out of default search; refused skill-page mistakes
+
+- Default `search` (no `skill`, no `page_id`) no longer returns escurel's system skills (`escurel`, `escurel-agent`,
+  `escurel-runtime`, `escurel-chat-channel`); name one with `skill:` (plus `page_kind: skill` for its skill page).
+  A client that filtered them itself can keep doing so; it is now a no-op (escurel #845).
+- `update_page` / `validate` refuse a sql_view skill page with `search_text`, `project` or `projection_limit`
+  beside `backend:` (`misplaced_backend_key`: put them inside `backend:`), and a skill id starting with `escurel-`
+  (`skill_id_reserved`) (escurel #861, #857).
+- The SQL lane matches `q` literally: `%` and `_` are ordinary characters (escurel #856).
+
 ## 0.33.1 — a query page reads only its target
 
 - `query_instance` runs a query page's SQL only when it reads its `{{target}}` and nothing else: one `SELECT` over the

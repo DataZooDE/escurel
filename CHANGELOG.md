@@ -9,6 +9,24 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Changed:
+- **Default `search` leaves escurel's system skills out (#845).** `escurel`, `escurel-agent`, `escurel-runtime` and
+  `escurel-chat-channel` are seeded into every tenant and outranked tenant content: for "acme widgets" they took
+  ranks 1–4 and the only page mentioning Acme was not in the top 5. A search that names no `skill` and no `page_id`
+  now excludes them before the top-k cut. `skill:` (with `page_kind: skill` for a skill page) brings one back;
+  `resolve`, `expand` and `list_skills` always reach them.
+- **A sql_view skill page with `search_text` / `project` / `projection_limit` beside `backend:` is refused (#861)**
+  with `misplaced_backend_key`. The binding reads them only inside `backend:`, so they were ignored without a word
+  (this kept the lab's SQL search empty). A projection refresh reports views without search columns under
+  `skipped`, and the boot log counts `skipped_no_columns` apart from `captured`.
+- **A tenant skill id under the reserved `escurel-` prefix is refused (#857)** with `skill_id_reserved`, for an
+  admin too: consumers hide every id under it as a system skill.
+
+Fixed:
+- **`%` and `_` in a `search` query are literal in the SQL lane (#856).** Since #849 a view's search columns are
+  matched as one U+001F-joined text, so an unescaped `a%b` (or `a_b`) also matched a row whose `title` is `a` and
+  `note` is `b`.
+
 ## v2026.11.22
 
 Fixed:
