@@ -300,13 +300,18 @@ pub(super) async fn tool_list_instances(
     // Deterministic ACL filter: drop owner-private instances the caller
     // does not own (admin bypasses). Enumeration must not leak what a
     // direct read would deny.
+    // One ACL snapshot for the page, not three lock acquisitions per item (#858).
+    let items: Vec<(&str, &Value)> = out
+        .iter()
+        .map(|i| (i.skill.as_str(), &i.frontmatter))
+        .collect();
+    let readable = indexer
+        .readable_mask(&caller, &items)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?;
     let mut instances = Vec::with_capacity(out.len());
-    for i in &out {
-        if indexer
-            .may_read_instance(&caller, &i.skill, &i.frontmatter)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
-        {
+    for (i, ok) in out.iter().zip(readable) {
+        if ok {
             instances.push(json!({
                 "page_id": i.page_id,
                 "skill": i.skill,
@@ -1168,13 +1173,18 @@ async fn list_rows(
         .await
         .map_err(|e| rows_err("list_instances", e))?;
     let mut instances = Vec::with_capacity(page.rows.len());
-    for r in &page.rows {
-        let fm = Value::Object(r.fields.clone());
-        if indexer
-            .may_read_instance(&caller, &src.skill, &fm)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
-        {
+    let fms: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|r| Value::Object(r.fields.clone()))
+        .collect();
+    let items: Vec<(&str, &Value)> = fms.iter().map(|fm| (src.skill.as_str(), fm)).collect();
+    let readable = indexer
+        .readable_mask(&caller, &items)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?;
+    for ((r, fm), ok) in page.rows.iter().zip(fms.iter()).zip(readable) {
+        if ok {
             instances.push(json!({
                 "page_id": r.page_id,
                 "skill": src.skill,
@@ -1210,13 +1220,17 @@ async fn list_remote_rows(
                 }
             })?;
     let mut instances = Vec::with_capacity(rows.len());
-    for r in &rows {
-        let fm = Value::Object(r.fields.clone());
-        if indexer
-            .may_read_instance(&caller, &src.skill, &fm)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
-        {
+    let fms: Vec<Value> = rows
+        .iter()
+        .map(|r| Value::Object(r.fields.clone()))
+        .collect();
+    let items: Vec<(&str, &Value)> = fms.iter().map(|fm| (src.skill.as_str(), fm)).collect();
+    let readable = indexer
+        .readable_mask(&caller, &items)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?;
+    for ((r, fm), ok) in rows.iter().zip(fms.iter()).zip(readable) {
+        if ok {
             instances.push(json!({
                 "page_id": r.page_id,
                 "skill": src.skill,

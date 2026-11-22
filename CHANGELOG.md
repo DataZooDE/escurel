@@ -6,6 +6,22 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+
+## Unreleased
+
+Fixed:
+- **An event read no longer holds the tenant's connection (#858).** `list_events`, `list_inbox` and the paged event
+  listings ran their query under the tenant's one connection lock. On a lake or attached-Postgres events backend that
+  read is a remote round-trip per catalog lookup (~1.4 s in the lab), and the async runner polls every 5 s, so every
+  other tool (`search`, `expand`, `query_instance`) queued behind it. Event reads now run on a clone of the connection:
+  the lock is held only for the clone, and a read still sees every write committed before it.
+- **List tools decide ACL once per page (#858).** `list_instances` (stored pages, `rows` and remote `rows` skills) took
+  the connection three or more times per item for a non-admin caller; it now decides the page against one ACL snapshot
+  (`Indexer::readable_mask`), as `search` does since #859.
+- **A sql_view projection capture has a budget, and the boot warm-up captures views concurrently (#855).** A capture
+  scans its whole source; a hung S3 or database read pinned a worker and delayed every later view. One past
+  `ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS` (default 300) is interrupted and rolled back, keeps the previous projection,
+  and is reported under `failed`. The warm-up captures 3 views at once; captures of the same view stay serialised.
 ## Unreleased
 
 ## v2026.11.21.1

@@ -1210,6 +1210,57 @@ pub(crate) async fn refresh_search_projections(
     Ok(report)
 }
 
+/// [`refresh_search_projections`] over every view, up to `concurrency` at once
+/// (#855). Each capture holds only its own view's lock, so one slow source no
+/// longer delays every view after it; the report lists views in overlay order.
+pub(crate) async fn refresh_search_projections_concurrent(
+    indexer: &std::sync::Arc<Indexer>,
+    concurrency: usize,
+) -> Result<super::sql_view_search::ProjectionRefresh, crate::IndexerError> {
+    let pruned = super::sql_view_search::prune_orphans(indexer).await?;
+    if pruned > 0 {
+        tracing::info!(target: "escurel", pruned, "sql_view search projection: orphaned rows pruned");
+    }
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (n, (_page_id, skill, view, _backend_ref)) in enumerate_sql_view_overlays(indexer)
+        .await?
+        .into_iter()
+        .enumerate()
+    {
+        let (idx, permits) = (
+            std::sync::Arc::clone(indexer),
+            std::sync::Arc::clone(&permits),
+        );
+        tasks.spawn(async move {
+            let _permit = permits.acquire_owned().await;
+            let out = super::sql_view_search::capture(&idx, &skill, &view).await;
+            (n, view, out)
+        });
+    }
+    let mut done = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(r) => done.push(r),
+            Err(e) => {
+                tracing::warn!(target: "escurel", error = %e, "sql_view search projection task failed")
+            }
+        }
+    }
+    done.sort_by_key(|(n, _, _)| *n);
+    let mut report = super::sql_view_search::ProjectionRefresh::default();
+    for (_, view, out) in done {
+        match out {
+            Ok(texts) => report.captured.push((view, texts)),
+            Err(e) => {
+                tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
+                report.failed.push((view, e.to_string()));
+            }
+        }
+    }
+    Ok(report)
+}
+
 /// Re-probe every SQL-view binding and compare the current schema
 /// fingerprint to the one stored at create time (REQ-NF-06).
 pub(crate) async fn validate_all_bindings(

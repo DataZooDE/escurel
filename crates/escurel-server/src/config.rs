@@ -55,6 +55,8 @@ use crate::{EmbedderFactory, ServerConfig, serve};
 
 /// Default vector dimension (EmbeddingGemma 768).
 const DEFAULT_DIM: usize = 768;
+/// sql_view search projections the post-boot warm-up captures at once (#855).
+const SQL_VIEW_WARMUP_CONCURRENCY: usize = 3;
 
 /// Compaction interval used when an append surface is lake-backed and the
 /// operator set no explicit `ESCUREL_SNAPSHOT_PUBLISH_SECS`.
@@ -827,6 +829,10 @@ pub struct EscurelConfig {
     /// libpq `connect_timeout` for a network database source (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`,
     /// default 5): a black-holed host must not hold the tenant's index connection for minutes.
     pub sql_connect_timeout: std::time::Duration,
+    /// Budget of one sql_view search-projection capture (`ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS`,
+    /// default 300): a capture scans its whole source; a hung read is interrupted and the previous
+    /// projection kept (#855).
+    pub sql_view_capture_timeout: std::time::Duration,
     /// Whether to drop + rebuild the derived DuckDB index at boot
     /// (`ESCUREL_REBUILD_INDEX_ON_BOOT`; default `if-missing`). The container
     /// image sets `always` to sidestep the HNSW-persistence-reload segfault.
@@ -1601,6 +1607,10 @@ impl EscurelConfig {
             "ESCUREL_SQL_CONNECT_TIMEOUT_SECS",
             escurel_index::SQL_CONNECT_TIMEOUT,
         )?;
+        let sql_view_capture_timeout = secs_knob(
+            "ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS",
+            escurel_index::SQL_VIEW_CAPTURE_TIMEOUT,
+        )?;
 
         // --- retrieval (rerank) ---
         // Default-on where built: a `--features rerank` binary defaults to the
@@ -1874,6 +1884,7 @@ impl EscurelConfig {
             egress,
             rows_query_timeout,
             sql_connect_timeout,
+            sql_view_capture_timeout,
             rebuild_index_on_boot,
             index_backend,
             role,
@@ -2510,7 +2521,12 @@ impl EscurelConfig {
                             let warm = Arc::clone(&indexer);
                             tokio::spawn(async move {
                                 let t = std::time::Instant::now();
-                                match warm.refresh_search_projections().await {
+                                match warm
+                                    .refresh_search_projections_concurrent(
+                                        SQL_VIEW_WARMUP_CONCURRENCY,
+                                    )
+                                    .await
+                                {
                                     Ok(report) => tracing::info!(
                                         target: "escurel",
                                         elapsed_ms = t.elapsed().as_millis() as u64,
@@ -3278,6 +3294,7 @@ impl EscurelConfig {
         // configured Indexer is finished, and it is a property of the running
         // instance rather than of its construction.
         base.set_query_timeout(std::time::Duration::from_millis(self.query_timeout_ms));
+        base.set_sql_view_capture_timeout(self.sql_view_capture_timeout);
         match reranker {
             Some(r) => base.with_reranker(r, retrieval),
             None => base.with_retrieval(retrieval),

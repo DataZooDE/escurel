@@ -69,8 +69,8 @@ pub use acl::{
 };
 pub use backend::{
     BackendBinding, BackendKind, BindingStatus, Capabilities, Materialized, ROWS_QUERY_TIMEOUT,
-    RemoteBinding, RemoteKind, RemoteOp, SQL_CONNECT_TIMEOUT, SearchMode, SqlConnector,
-    SqlViewBackend, SqlViewBinding, SqlViewError,
+    RemoteBinding, RemoteKind, RemoteOp, SQL_CONNECT_TIMEOUT, SQL_VIEW_CAPTURE_TIMEOUT, SearchMode,
+    SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
 };
 pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};

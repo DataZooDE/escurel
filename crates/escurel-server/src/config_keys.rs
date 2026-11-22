@@ -966,6 +966,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "libpq `connect_timeout` for a network database source (Postgres), so a black-holed host cannot hold the tenant's index connection for the OS TCP timeout. Whole number of seconds ≥ 1",
     },
     ConfigKey {
+        name: "ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS",
+        component: "Server",
+        default: "300",
+        doc: "Budget of one sql_view search-projection capture (a scan of the whole source into the local search cache). Past it the scan is interrupted and rolled back, the view's previous projection stays searchable, and the boot log counts it under `failed`. The post-boot warm-up captures 3 views at once. Whole number of seconds ≥ 1",
+    },
+    ConfigKey {
         name: "ESCUREL_QUERY_TIMEOUT_MS",
         component: "Server",
         default: "see `escurel_index::DEFAULT_QUERY_TIMEOUT_MS`",

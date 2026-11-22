@@ -68,6 +68,10 @@ pub(crate) fn columns_of(binding: &super::BackendBinding) -> Vec<String> {
 }
 
 /// The projection key: the overlay's binding hash plus the searched columns.
+/// Default budget of one projection capture (#855): a full scan of the source,
+/// so generous, but finite: a hung S3 or database read must not pin a worker.
+pub const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub(crate) fn signature(binding_hash: &str, cols: &[String]) -> String {
     let mut h = Sha256::new();
     h.update(binding_hash.as_bytes());
@@ -82,17 +86,23 @@ pub(crate) fn signature(binding_hash: &str, cols: &[String]) -> String {
 /// many distinct texts were kept. On a failure (source unreachable) the
 /// previous projection is kept.
 ///
-/// The key is derived HERE, under [`Indexer::projection_lock`], from the
-/// overlay's CURRENT binding hash and the skill's CURRENT columns — never from
-/// a value the caller read earlier. Captures are serialised, so the last one
-/// reflects the latest binding; a refresh that read an overlay before a
+/// The key is derived HERE, under the view's capture lock, from the overlay's
+/// CURRENT binding hash and the skill's CURRENT columns — never from a value
+/// the caller read earlier. Captures of one view are serialised, so the last
+/// one reflects the latest binding; a refresh that read an overlay before a
 /// re-create can no longer publish the old key over the new projection.
+/// Different views capture at once (#855); `prune_orphans` excludes them all.
+///
+/// The scan has a budget ([`Indexer::sql_view_capture_timeout`]): one past it
+/// is interrupted, rolled back, and reported, and the previous projection stays.
 pub(crate) async fn capture(
     indexer: &Indexer,
     skill: &str,
     view: &str,
 ) -> Result<usize, IndexerError> {
-    let _serial = indexer.projection_lock.lock().await;
+    let _all = indexer.projection_lock.read().await;
+    let view_lock = indexer.projection_view_lock(view);
+    let _serial = view_lock.lock().await;
     let cols = search_columns(indexer, skill).await;
     if cols.is_empty() || !is_managed_view(view) {
         tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no searchable columns");
@@ -104,7 +114,26 @@ pub(crate) async fn capture(
     };
     let sig = signature(&binding_hash, &cols);
     let conn = indexer.conn.lock().await.try_clone()?;
-    let texts = super::blocking_section(|| capture_on(&conn, view, &sig, &cols))?;
+    let texts = match indexer.sql_view_capture_timeout() {
+        None => super::blocking_section(|| capture_on(&conn, view, &sig, &cols))?,
+        Some(budget) => {
+            let started = std::time::Instant::now();
+            super::rows::with_statement_timeout(&conn, budget, || {
+                capture_on(&conn, view, &sig, &cols).map_err(super::SqlViewError::from)
+            })
+            // `capture_on` fails only with a DuckDB error; anything else is the
+            // helper's own timeout verdict.
+            .map_err(|e| match e {
+                super::SqlViewError::Duckdb(d) if started.elapsed() < budget => {
+                    IndexerError::Duckdb(d)
+                }
+                _ => IndexerError::CaptureTimedOut {
+                    view: view.to_owned(),
+                    secs: budget.as_secs().max(1),
+                },
+            })?
+        }
+    };
     if texts >= MAX_SEARCH_TEXTS {
         tracing::warn!(
             target: "escurel",
@@ -138,7 +167,7 @@ async fn current_binding_hash(
 /// Drop the projection of every view no sql_view overlay names any more (an
 /// instance deleted by a path that did not prune, or a rebuild that lost it).
 pub(crate) async fn prune_orphans(indexer: &Indexer) -> Result<usize, IndexerError> {
-    let _serial = indexer.projection_lock.lock().await;
+    let _all = indexer.projection_lock.write().await;
     let conn = indexer.conn.lock().await;
     Ok(conn.execute(
         "DELETE FROM sql_view_search_text WHERE view NOT IN (\
@@ -392,6 +421,185 @@ mod tests {
             elapsed < BOUND,
             "{} decisions took {elapsed:?} behind a busy connection ({HOLD:?} holds)",
             2 * HITS
+        );
+    }
+
+    /// The list tools (`list_instances`, rows, `neighbours`, provenance) filter
+    /// a whole page by ACL. Item by item, a non-admin page of N items queued
+    /// behind a busy connection ≥ 3·N times (#858). `readable_mask` decides the
+    /// page against one `AclContext`, with the same answers as the one-item path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn filtering_a_page_by_acl_takes_the_connection_a_bounded_number_of_times() {
+        let f = fixture();
+        let idx = &f.idx;
+        idx.update_page(
+            "markdown/skills/note.md",
+            "---\nkind: skill\nid: note\ndescription: x\nacl:\n  read: [team]\n---\n# note\n",
+        )
+        .await
+        .unwrap();
+        idx.update_page(
+            "markdown/skills/diary.md",
+            "---\nkind: skill\nid: diary\ndescription: x\nvisibility: owner\nowner_field: author\n---\n# diary\n",
+        )
+        .await
+        .unwrap();
+        let team = vec!["team".to_owned()];
+        let member = AclCaller {
+            subject: "u1",
+            token_groups: &team,
+            ..AclCaller::default()
+        };
+        let admin = AclCaller {
+            subject: "root",
+            is_admin: true,
+            ..AclCaller::default()
+        };
+        let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+        for i in 0..HITS {
+            items.push((
+                "note".to_owned(),
+                json!({"id": format!("n{i}"), "skill": "note"}),
+            ));
+            let author = if i % 2 == 0 { "u1" } else { "u2" };
+            items.push((
+                "diary".to_owned(),
+                json!({"id": format!("d{i}"), "skill": "diary", "author": author}),
+            ));
+        }
+        let refs: Vec<(&str, &serde_json::Value)> =
+            items.iter().map(|(s, fm)| (s.as_str(), fm)).collect();
+
+        let (stop, neighbour) = busy_neighbour(idx).await;
+        let t = Instant::now();
+        let mask = idx.readable_mask(&member, &refs).await.unwrap();
+        let elapsed = t.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        neighbour.await.unwrap();
+
+        assert_eq!(mask.len(), refs.len());
+        for ((skill, fm), got) in refs.iter().zip(&mask) {
+            let want = idx.may_read_instance(&member, skill, fm).await.unwrap();
+            assert_eq!(*got, want, "{skill} {fm}");
+        }
+        assert_eq!(mask.iter().filter(|b| **b).count(), HITS + HITS / 2);
+        assert!(
+            idx.readable_mask(&admin, &refs)
+                .await
+                .unwrap()
+                .iter()
+                .all(|b| *b)
+        );
+        assert!(
+            elapsed < BOUND,
+            "a page of {} items took {elapsed:?} behind a busy connection ({HOLD:?} holds)",
+            refs.len()
+        );
+    }
+
+    /// A `customers` sql_view skill with `n` instances over one json file
+    /// (`title: widget`); returns each instance's managed view name.
+    async fn customers(idx: &Arc<Indexer>, n: usize, data: &tempfile::TempDir) -> Vec<String> {
+        idx.update_page(
+            "markdown/skills/customers.md",
+            "---\nkind: skill\nid: customers\ndescription: x\nbackend:\n  kind: sql_view\n  \
+             source: { connector: json_dir, relation: /unused }\n  search_text: [title]\n---\n# c\n",
+        )
+        .await
+        .unwrap();
+        std::fs::write(data.path().join("a.json"), br#"{"title":"widget"}"#).unwrap();
+        let binding = SqlViewBinding {
+            connector: SqlConnector::JsonDir,
+            attach: None,
+            relation: data.path().to_str().unwrap().to_owned(),
+            filter: None,
+            project: Default::default(),
+            search_text: vec!["title".to_owned()],
+        };
+        let backend = SqlViewBackend::new(Arc::clone(idx));
+        let mut views = Vec::new();
+        for i in 0..n {
+            let m = backend
+                .create_instance("customers", &binding, &format!("c{i}"), "# c")
+                .await
+                .unwrap();
+            let conn = idx.conn.lock().await;
+            views.push(
+                conn.query_row(
+                    "SELECT json_extract_string(frontmatter, '$.backend_ref.view') FROM pages WHERE page_id = ?",
+                    [&m.page_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap(),
+            );
+        }
+        views
+    }
+
+    /// Make `view` a source whose capture scan runs for many seconds (a hung S3
+    /// or database read, modelled), with the same `title` column.
+    async fn make_slow(idx: &Indexer, view: &str) {
+        idx.conn
+            .lock()
+            .await
+            .execute_batch(&format!(
+                "CREATE OR REPLACE VIEW {view} AS \
+                 SELECT CASE WHEN i < 0 THEN 'never' ELSE 'widget' END AS title FROM range(5000000000) t(i)"
+            ))
+            .unwrap();
+    }
+
+    const BUDGET: Duration = Duration::from_millis(600);
+
+    /// A capture has a budget (#855). One that runs past it is interrupted,
+    /// reported as failed, and the previous projection stays searchable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_capture_past_its_budget_is_cut_and_keeps_the_previous_projection() {
+        let f = fixture();
+        let idx = &f.idx;
+        let data = tempfile::TempDir::new().unwrap();
+        let views = customers(idx, 1, &data).await;
+        assert!(projected_rows(idx, &views[0]).await > 0);
+        idx.set_sql_view_capture_timeout(BUDGET);
+        make_slow(idx, &views[0]).await;
+
+        let t = Instant::now();
+        let report = idx
+            .refresh_search_projections_for_skill("customers")
+            .await
+            .unwrap();
+        let took = t.elapsed();
+        assert!(
+            took < BUDGET * 4,
+            "a capture past its {BUDGET:?} budget took {took:?}"
+        );
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert!(
+            projected_rows(idx, &views[0]).await > 0,
+            "the previous projection was lost"
+        );
+    }
+
+    /// The boot warm-up captures several views at once (#855): two slow views
+    /// cost about one budget, not one each, and a fast view is not held up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_warm_up_captures_views_concurrently() {
+        let f = fixture();
+        let idx = &f.idx;
+        let data = tempfile::TempDir::new().unwrap();
+        let views = customers(idx, 3, &data).await;
+        idx.set_sql_view_capture_timeout(BUDGET);
+        make_slow(idx, &views[0]).await;
+        make_slow(idx, &views[1]).await;
+
+        let t = Instant::now();
+        let report = idx.refresh_search_projections_concurrent(3).await.unwrap();
+        let took = t.elapsed();
+        assert_eq!(report.failed.len(), 2, "{report:?}");
+        assert_eq!(report.captured.len(), 1, "{report:?}");
+        assert!(
+            took < BUDGET * 2,
+            "two slow views and one fast took {took:?}; serially that is two budgets ({BUDGET:?} each)"
         );
     }
 

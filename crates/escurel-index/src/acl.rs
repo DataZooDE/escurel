@@ -398,6 +398,29 @@ impl Indexer {
     /// the same `caller`. Same policy, same order; a skill missing from the
     /// context's catalogue has no skill-level ACL, exactly as a skill without a
     /// page does in [`Self::may_read_instance`].
+    /// [`Self::may_read_instance`] for a whole list at once (#858): one
+    /// catalogue read and one [`AclContext`], then every item decided against
+    /// it. A list tool filtering item by item takes the tenant's connection
+    /// three or more times per item, and behind a busy connection each of those
+    /// queues. `items` are `(skill, frontmatter)`; the result is in the same
+    /// order. Admins read everything.
+    pub async fn readable_mask(
+        &self,
+        caller: &AclCaller<'_>,
+        items: &[(&str, &Value)],
+    ) -> Result<Vec<bool>, IndexerError> {
+        if caller.is_admin || items.is_empty() {
+            return Ok(vec![true; items.len()]);
+        }
+        let skills = self.list_skills().await?;
+        let ctx = self.acl_context(caller, &skills).await?;
+        let mut out = Vec::with_capacity(items.len());
+        for (skill, fm) in items {
+            out.push(self.may_read_instance_in(&ctx, caller, skill, fm).await?);
+        }
+        Ok(out)
+    }
+
     pub async fn may_read_instance_in(
         &self,
         ctx: &AclContext,
