@@ -9,6 +9,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.22
+
 Fixed:
 - **An event read no longer holds the tenant's connection (#858).** `list_events`, `list_inbox` and the paged event
   listings ran their query under the tenant's one connection lock. On a lake or attached-Postgres events backend that
@@ -22,7 +24,9 @@ Fixed:
   scans its whole source; a hung S3 or database read pinned a worker and delayed every later view. One past
   `ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS` (default 300) is interrupted and rolled back, keeps the previous projection,
   and is reported under `failed`. The warm-up captures 3 views at once; captures of the same view stay serialised.
-## Unreleased
+
+**Upgrade:** move the gateway and the runner together. New optional env `ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS`
+(default 300); nothing to set.
 
 ## v2026.11.21.1
 

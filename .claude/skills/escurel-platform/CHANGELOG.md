@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.33.1 — a query page reads only its target
+
+- `query_instance` runs a query page's SQL only when it reads its `{{target}}` and nothing else: one `SELECT` over the
+  target view, its own CTEs and the `range` / `generate_series` / `unnest` generators, with no state-reading
+  function (`getenv`, `current_setting`, `read_*`, `duckdb_*` …). A second table, a file path, `PIVOT`, `SUMMARIZE`,
+  DML or several statements are refused with the domain error `sql_not_allowed`, naming the reason. Rewrite such a
+  page over its target (references/02; escurel #854, v2026.11.21.1).
+
 ## 0.33.0 — which inbox events a runner dispatches
 
 - `ESCUREL_RUNNER_DISPATCH` (`all` default | `agent`): with `agent` a runner dispatches only events an agent profile is
