@@ -309,6 +309,19 @@ narrowed. Useful for "find recent meetings about Acme":
 `search(q='Acme', skill='meeting', filter={at: {">=":
 "2026-04-01"}})`.
 
+**System skills are left out by default (#845).** The skills escurel seeds
+into every tenant (`escurel`, `escurel-agent`, `escurel-runtime`,
+`escurel-chat-channel`) are excluded from a search that names no `skill` and
+no `page_id`, before the top-`k` cut, so the hits are tenant content. Name
+one with `skill` (for its skill page, with `page_kind: "skill"`) to search
+it; `resolve`, `expand` and `list_skills` always reach them.
+The `escurel-` skill-id prefix is reserved for them: a tenant skill page with
+such an id is refused on write with `skill_id_reserved` (#857).
+
+**The SQL lane matches literally (#856).** A `sql_view` instance is a
+candidate when one of its `search_text` columns contains `q`
+(case-insensitive); `%` and `_` in `q` are ordinary characters.
+
 #### `resolve`
 
 ```jsonc
@@ -1261,6 +1274,10 @@ backend:
   search_text: [name, notes]               # columns that enter late FTS
   projection_limit: 50                     # optional; rows expand renders (default 50)
 ```
+
+`search_text`, `project` and `projection_limit` belong **inside** `backend:`.
+A `sql_view` skill page that puts one beside it is refused on write with
+`misplaced_backend_key` (#861): the binding never reads it there.
 
 - **Secrets never live in markdown.** `source.attach` names a credential
   registered out-of-band via `register_credential` (admin), realised as a

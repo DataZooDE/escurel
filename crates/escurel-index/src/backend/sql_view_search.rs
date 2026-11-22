@@ -38,6 +38,9 @@ pub struct ProjectionRefresh {
     pub captured: Vec<(String, usize)>,
     /// Views whose capture failed, with the error.
     pub failed: Vec<(String, String)>,
+    /// Views with nothing to capture: their skill declares no `search_text`
+    /// columns (or no overlay names them). Not searchable by content (#861).
+    pub skipped: Vec<String>,
 }
 
 /// The skill's `search_text` columns that are safe identifiers (empty when the
@@ -99,18 +102,18 @@ pub(crate) async fn capture(
     indexer: &Indexer,
     skill: &str,
     view: &str,
-) -> Result<usize, IndexerError> {
+) -> Result<Option<usize>, IndexerError> {
     let _all = indexer.projection_lock.read().await;
     let view_lock = indexer.projection_view_lock(view);
     let _serial = view_lock.lock().await;
     let cols = search_columns(indexer, skill).await;
     if cols.is_empty() || !is_managed_view(view) {
         tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no searchable columns");
-        return Ok(0);
+        return Ok(None);
     }
     let Some(binding_hash) = current_binding_hash(indexer, view).await? else {
         tracing::debug!(target: "escurel", view, "sql_view search projection skipped: no overlay names the view");
-        return Ok(0);
+        return Ok(None);
     };
     let sig = signature(&binding_hash, &cols);
     let conn = indexer.conn.lock().await.try_clone()?;
@@ -142,7 +145,7 @@ pub(crate) async fn capture(
             "sql_view search projection truncated: search match counts are lower bounds"
         );
     }
-    Ok(texts)
+    Ok(Some(texts))
 }
 
 /// The `backend_ref.binding_hash` of the sql_view overlay that names `view`.
@@ -222,7 +225,7 @@ pub(crate) fn match_count(
 ) -> Result<i64, duckdb::Error> {
     conn.query_row(
         "SELECT coalesce(sum(n), 0)::BIGINT FROM sql_view_search_text \
-         WHERE view = ? AND sig = ? AND text ILIKE ?",
+         WHERE view = ? AND sig = ? AND text ILIKE ? ESCAPE '\\'",
         [view, sig, pattern],
         |r| r.get(0),
     )
@@ -601,6 +604,106 @@ mod tests {
             took < BUDGET * 2,
             "two slow views and one fast took {took:?}; serially that is two budgets ({BUDGET:?} each)"
         );
+    }
+
+    /// A sql_view instance of `skill` (columns `title`, `note`) over `rows`.
+    async fn notes_instance(
+        idx: &Arc<Indexer>,
+        skill: &str,
+        id: &str,
+        rows: &[&str],
+    ) -> tempfile::TempDir {
+        let data = tempfile::TempDir::new().unwrap();
+        for (i, r) in rows.iter().enumerate() {
+            std::fs::write(data.path().join(format!("{i}.json")), r.as_bytes()).unwrap();
+        }
+        let binding = SqlViewBinding {
+            connector: SqlConnector::JsonDir,
+            attach: None,
+            relation: data.path().to_str().unwrap().to_owned(),
+            filter: None,
+            project: Default::default(),
+            search_text: vec!["title".to_owned(), "note".to_owned()],
+        };
+        SqlViewBackend::new(Arc::clone(idx))
+            .create_instance(skill, &binding, id, "# n")
+            .await
+            .unwrap();
+        data
+    }
+
+    /// #856: `%` and `_` in `q` are literal characters. Since #849 a view's
+    /// search columns are matched as ONE text joined by U+001F, so an unescaped
+    /// `a%b` also matched a row whose `title` is `a` and `note` is `b`, and `a_b`
+    /// matched it too (`_` is any one character, the separator included).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn like_wildcards_in_the_query_are_literal() {
+        let f = fixture();
+        let idx = &f.idx;
+        idx.update_page(
+            "markdown/skills/notes.md",
+            "---\nkind: skill\nid: notes\ndescription: x\nbackend:\n  kind: sql_view\n  \
+             source: { connector: json_dir, relation: /unused }\n  search_text: [title, note]\n---\n# n\n",
+        )
+        .await
+        .unwrap();
+        let _split = notes_instance(idx, "notes", "split", &[r#"{"title":"a","note":"b"}"#]).await;
+        let _lit =
+            notes_instance(idx, "notes", "literal", &[r#"{"title":"a%b","note":"x"}"#]).await;
+        let skills = idx.list_skills().await.unwrap();
+        let ids = |hits: Vec<crate::search::SearchHit>| {
+            let mut v: Vec<String> = hits.into_iter().map(|h| h.page_id).collect();
+            v.sort();
+            v
+        };
+        let pct = idx
+            .sql_view_search_candidates_with("a%b", None, &skills)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(pct),
+            vec!["markdown/instances/notes/literal.md".to_owned()]
+        );
+        let und = idx
+            .sql_view_search_candidates_with("a_b", None, &skills)
+            .await
+            .unwrap();
+        assert!(und.is_empty(), "`_` matched across columns: {:?}", ids(und));
+        // An ordinary query still matches within one column.
+        let plain = idx
+            .sql_view_search_candidates_with("a", None, &skills)
+            .await
+            .unwrap();
+        assert_eq!(ids(plain).len(), 2);
+    }
+
+    /// #861: a view whose skill declares no `search_text` columns is SKIPPED,
+    /// not captured: the boot log's `captured=9` once meant nine empty views.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_view_without_search_columns_is_reported_as_skipped() {
+        let f = fixture();
+        let idx = &f.idx;
+        let data = tempfile::TempDir::new().unwrap();
+        let views = customers(idx, 1, &data).await;
+        idx.update_page(
+            "markdown/skills/plain.md",
+            "---\nkind: skill\nid: plain\ndescription: x\nbackend:\n  kind: sql_view\n  \
+             source: { connector: json_dir, relation: /unused }\n---\n# p\n",
+        )
+        .await
+        .unwrap();
+        let _p = notes_instance(idx, "plain", "all", &[r#"{"title":"t","note":"n"}"#]).await;
+        let report = idx.refresh_search_projections().await.unwrap();
+        assert_eq!(
+            report
+                .captured
+                .iter()
+                .map(|(v, _)| v.clone())
+                .collect::<Vec<_>>(),
+            views
+        );
+        assert_eq!(report.skipped.len(), 1, "{report:?}");
+        assert!(report.skipped[0].starts_with("vw_plain"), "{report:?}");
     }
 
     async fn projected_rows(idx: &Indexer, view: &str) -> i64 {
