@@ -2532,6 +2532,7 @@ impl EscurelConfig {
                                         elapsed_ms = t.elapsed().as_millis() as u64,
                                         captured = report.captured.len(),
                                         failed = report.failed.len(),
+                                        skipped_no_columns = report.skipped.len(),
                                         "writer boot: sql_view search projections captured"
                                     ),
                                     Err(e) => tracing::warn!(

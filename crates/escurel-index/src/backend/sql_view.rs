@@ -470,7 +470,10 @@ pub(crate) async fn search_candidates(
     //    columns come from the caller's catalogue and every count runs under ONE
     //    lock: a per-instance lookup would queue behind a busy connection once
     //    per instance.
-    let pattern = format!("%{q}%");
+    // `%` and `_` in `q` are literal (#856): the projection joins a view's
+    // columns into one U+001F-separated text, so an unescaped wildcard matched
+    // across two columns. Escaped, a literal query means "some column contains it".
+    let pattern = super::rows::like_contains(q);
     let catalogue: std::collections::HashMap<&str, Vec<String>> = skills
         .iter()
         .map(|s| {
@@ -1200,7 +1203,8 @@ pub(crate) async fn refresh_search_projections(
             continue;
         }
         match super::sql_view_search::capture(indexer, &skill, &view).await {
-            Ok(texts) => report.captured.push((view, texts)),
+            Ok(Some(texts)) => report.captured.push((view, texts)),
+            Ok(None) => report.skipped.push(view),
             Err(e) => {
                 tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
                 report.failed.push((view, e.to_string()));
@@ -1251,7 +1255,8 @@ pub(crate) async fn refresh_search_projections_concurrent(
     let mut report = super::sql_view_search::ProjectionRefresh::default();
     for (_, view, out) in done {
         match out {
-            Ok(texts) => report.captured.push((view, texts)),
+            Ok(Some(texts)) => report.captured.push((view, texts)),
+            Ok(None) => report.skipped.push(view),
             Err(e) => {
                 tracing::warn!(target: "escurel", view, error = %e, "sql_view search projection not refreshed");
                 report.failed.push((view, e.to_string()));

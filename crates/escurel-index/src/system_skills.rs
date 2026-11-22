@@ -58,6 +58,10 @@ pub struct LegacySystemSkill {
 /// Skill id of agent profiles (#823): the one the agent-profile parser keys on.
 pub use escurel_types::agent_profile::AGENT_SKILL as AGENT_SKILL_ID;
 
+/// The skill-id prefix reserved for escurel's own skills (v2026.11.21, #857).
+/// Every system skill but the meta skill carries it; a tenant skill may not.
+pub const SYSTEM_SKILL_PREFIX: &str = "escurel-";
+
 /// Every skill escurel ships. Adding one is adding a row.
 pub const SYSTEM_SKILLS: &[SystemSkill] = &[
     SystemSkill {

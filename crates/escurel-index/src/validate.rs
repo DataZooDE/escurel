@@ -184,6 +184,64 @@ fn check_connector(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
     })
 }
 
+/// Keys of the `backend:` block that a skill page put beside it instead (#861).
+/// The binding reads them only inside `backend:`, so at the top level they were
+/// dropped without a word: the lab's sql_view search had no columns for weeks.
+const BACKEND_ONLY_KEYS: &[&str] = &["search_text", "project", "projection_limit"];
+
+fn check_misplaced_backend_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
+        return Vec::new();
+    }
+    let is_sql_view = fields
+        .get("backend")
+        .and_then(YamlValue::as_mapping)
+        .and_then(|b| b.get("kind"))
+        .and_then(YamlValue::as_str)
+        == Some("sql_view");
+    if !is_sql_view {
+        return Vec::new();
+    }
+    BACKEND_ONLY_KEYS
+        .iter()
+        .filter(|k| fields.contains_key(**k))
+        .map(|k| {
+            Issue::error(
+                "misplaced_backend_key",
+                format!("frontmatter.{k}"),
+                format!(
+                    "`{k}` belongs under `backend:`; beside it, the sql_view binding ignores it"
+                ),
+            )
+            .with_suggestion(format!("backend:\n  kind: sql_view\n  source: …\n  {k}: …"))
+        })
+        .collect()
+}
+
+/// The `escurel-` skill-id prefix is reserved for the skills escurel ships
+/// (#857, v2026.11.21): consumers hide every id under it as a system skill.
+fn check_reserved_skill_id(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
+        return None;
+    }
+    let id = fields.get("id")?.as_str()?;
+    let reserved = id.starts_with(crate::system_skills::SYSTEM_SKILL_PREFIX)
+        && !crate::system_skills::SYSTEM_SKILLS
+            .iter()
+            .any(|s| s.id == id);
+    reserved.then(|| {
+        Issue::error(
+            "skill_id_reserved",
+            "frontmatter.id",
+            format!(
+                "skill id `{id}` is under the `{}` prefix, which is reserved for escurel's system skills",
+                crate::system_skills::SYSTEM_SKILL_PREFIX
+            ),
+        )
+        .with_suggestion("choose an id without the `escurel-` prefix")
+    })
+}
+
 /// The `autonomy:` check (heron#5 / CR-1), on SKILL pages only.
 ///
 /// Scoped to skill pages because that is where the key is declared: the
@@ -1674,6 +1732,14 @@ impl Indexer {
         }
         // A connector the gateway refuses (MySQL / MariaDB): said at validate time, BLOCKING at write time.
         issues.extend(check_connector(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_misplaced_backend_keys(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
+        issues.extend(check_reserved_skill_id(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
         issues.extend(check_params(parsed.frontmatter.page_kind, fields));
         // The instance-shape block a skill declares (#508). Checked on the

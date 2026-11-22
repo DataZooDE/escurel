@@ -483,7 +483,7 @@ pub const ROWS_SEARCH_PER_SKILL: usize = 20;
 pub const ROWS_SEARCH_TOTAL: usize = 50;
 
 /// `q` as a LIKE pattern that matches it literally anywhere (`%`, `_` and `\` are escaped).
-fn like_contains(q: &str) -> String {
+pub(crate) fn like_contains(q: &str) -> String {
     let mut out = String::with_capacity(q.len() + 2);
     out.push('%');
     for c in q.chars() {

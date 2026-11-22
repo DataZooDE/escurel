@@ -647,6 +647,21 @@ fn build_filters(
     if let Some(s) = skill {
         sql.push_str(" AND blocks.skill = ?");
         params.push(s.to_owned());
+    } else if page_id.is_none() {
+        // escurel's system skills are seeded into every tenant and outranked its
+        // content in a free-text search (#845). A search that names no skill and
+        // no page leaves them out here, in both ranking arms, so the top-k is
+        // filled with tenant content. `skill:` (or `page_id`) brings them back;
+        // `resolve` / `expand` / `list_skills` always reach them.
+        let ids: Vec<&str> = crate::system_skills::SYSTEM_SKILLS
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        sql.push_str(&format!(
+            " AND blocks.skill NOT IN ({})",
+            vec!["?"; ids.len()].join(", ")
+        ));
+        params.extend(ids.iter().map(|id| (*id).to_owned()));
     }
     if let Some(ts) = as_of {
         sql.push_str(" AND (blocks.at_ts <= ? OR blocks.at_ts IS NULL)");
