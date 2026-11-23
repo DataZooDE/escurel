@@ -9,6 +9,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.23
+
 Changed:
 - **Default `search` leaves escurel's system skills out (#845).** `escurel`, `escurel-agent`, `escurel-runtime` and
   `escurel-chat-channel` are seeded into every tenant and outranked tenant content: for "acme widgets" they took
@@ -26,6 +28,10 @@ Fixed:
 - **`%` and `_` in a `search` query are literal in the SQL lane (#856).** Since #849 a view's search columns are
   matched as one U+001F-joined text, so an unescaped `a%b` (or `a_b`) also matched a row whose `title` is `a` and
   `note` is `b`.
+
+**Upgrade:** move the gateway and the runner together. A sql_view skill page with `search_text` / `project` /
+`projection_limit` beside `backend:`, or a tenant skill id starting with `escurel-`, is now refused on write: move
+the keys under `backend:` / rename the skill first.
 
 ## v2026.11.22
 
