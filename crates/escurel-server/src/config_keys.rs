@@ -966,6 +966,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "libpq `connect_timeout` for a network database source (Postgres), so a black-holed host cannot hold the tenant's index connection for the OS TCP timeout. Whole number of seconds ≥ 1",
     },
     ConfigKey {
+        name: "ESCUREL_FTS_REFRESH_SECS",
+        component: "Server",
+        default: "30",
+        doc: "How often the BM25 (lexical) search index is rebuilt when pages changed since its last build. DuckDB's full-text index has no incremental update, so a page written while serving reaches lexical search at the next rebuild (~1 ms per page, under the tenant lock). `0` = only at boot and rebuild",
+    },
+    ConfigKey {
         name: "ESCUREL_SQL_VIEW_CAPTURE_TIMEOUT_SECS",
         component: "Server",
         default: "300",

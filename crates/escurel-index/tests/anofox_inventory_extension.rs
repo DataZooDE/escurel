@@ -34,7 +34,7 @@ const SKILL_INVENTORY: (&str, &str) = (
     "markdown/skills/inventory.md",
     "---\nkind: skill\nid: inventory\ndescription: SKU planning inputs, read-only.\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
-     search_text: [sku]\n---\n# inventory\n",
+     \x20\x20search_text: [sku]\n---\n# inventory\n",
 );
 
 /// Owner-private sql_view skill — a non-owner, non-admin caller is denied.
@@ -43,7 +43,7 @@ const SKILL_INVENTORY_SECRET: (&str, &str) = (
     "---\nkind: skill\nid: secret_inventory\ndescription: Owner-private SKU inputs.\n\
      visibility: owner\nowner_field: credential\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
-     search_text: [sku]\n---\n# secret_inventory\n",
+     \x20\x20search_text: [sku]\n---\n# secret_inventory\n",
 );
 
 /// The curator's reorder-policy page: calls the REAL `inv_optimize_qr` over the

@@ -39,6 +39,7 @@ mod events_lake_churn_live;
 mod events_pg_cost_live;
 mod field_rules;
 mod frontmatter_links;
+mod fts_freshness;
 mod gdrive_lake_settings;
 mod historical_expand;
 mod index_roundtrip;

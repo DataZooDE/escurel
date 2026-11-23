@@ -74,6 +74,7 @@ mod events_runner_status;
 mod external_agent_token;
 mod field_max_items;
 mod file_connector_confinement;
+mod fts_refresh;
 mod fusion_acl;
 mod get_run_tool_calls;
 mod group_members_acl;

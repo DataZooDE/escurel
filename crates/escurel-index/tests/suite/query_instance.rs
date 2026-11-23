@@ -30,7 +30,7 @@ const SKILL_SALES: (&str, &str) = (
     "markdown/skills/sales.md",
     "---\nkind: skill\nid: sales\ndescription: Sales lines, mirrored read-only.\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
-     search_text: [category]\n---\n# sales\n",
+     \x20\x20search_text: [category]\n---\n# sales\n",
 );
 
 /// An owner-private sql_view skill — a non-owner, non-admin caller must be
@@ -40,7 +40,7 @@ const SKILL_SECRET: (&str, &str) = (
     "---\nkind: skill\nid: secret_sales\ndescription: Owner-private sales.\n\
      visibility: owner\nowner_field: credential\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
-     search_text: [category]\n---\n# secret_sales\n",
+     \x20\x20search_text: [category]\n---\n# secret_sales\n",
 );
 
 /// Aggregating report: total amount per category, with a runtime floor bound

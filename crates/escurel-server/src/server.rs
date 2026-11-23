@@ -314,6 +314,9 @@ pub struct ServerConfig {
     /// How long a run transcript is kept (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`,
     /// default 90 days); `None` = forever. Swept on the minted-run tick.
     pub run_transcript_retention: Option<std::time::Duration>,
+    /// How often the BM25 index is rebuilt when pages changed since its last build
+    /// (`ESCUREL_FTS_REFRESH_SECS`, default 30; `None` = only at boot/rebuild, #868).
+    pub fts_refresh: Option<std::time::Duration>,
     /// How long a graceful stop waits for in-flight requests before it aborts them
     /// (`ESCUREL_SHUTDOWN_DRAIN_SECS`, default [`DEFAULT_SHUTDOWN_DRAIN`]). Kept below the
     /// orchestrator's own kill timeout, so a stuck request cannot get the process SIGKILLed mid-write.
@@ -902,7 +905,17 @@ pub async fn serve(
     let mint_every = config
         .minted_run_sweep
         .unwrap_or(std::time::Duration::from_secs(30));
+    // The BM25 index has no incremental refresh (#868): rebuild it on a timer,
+    // and only when the index changed since the last build. Off = `None`; the
+    // arm then waits on a future that never resolves.
+    let fts_every = config.fts_refresh;
+    let fts_indexer = state.indexer.clone();
     let evict_join = tokio::spawn(async move {
+        let mut fts_tick = fts_every.map(|every| {
+            let mut t = tokio::time::interval(every);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            t
+        });
         let mut tick = tokio::time::interval(EVICT_SWEEP_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut mint_tick = tokio::time::interval(mint_every);
@@ -915,6 +928,24 @@ pub async fn serve(
                 _ = mint_tick.tick() => {
                     crate::mcp::sweep_expired_minted_runs(&mint_state).await;
                     crate::mcp::sweep_run_transcripts(&mint_state).await;
+                }
+                _ = async {
+                    match fts_tick.as_mut() {
+                        Some(t) => t.tick().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(indexer) = fts_indexer.as_ref().map(escurel_index::IndexerHandle::current) {
+                        let started = std::time::Instant::now();
+                        match indexer.refresh_fts_if_stale().await {
+                            Ok(true) => tracing::debug!(
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "BM25 index rebuilt: pages changed since the last build"
+                            ),
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!(error = %e, "BM25 index refresh failed; the next tick retries"),
+                        }
+                    }
                 }
                 _ = &mut evict_shutdown_rx => break,
             }

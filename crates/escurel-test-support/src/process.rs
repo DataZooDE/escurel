@@ -202,6 +202,9 @@ pub struct ConfigOverrides {
     /// How long run transcripts are kept (#822); `None` = forever (a test
     /// gateway keeps everything unless the test asks).
     pub run_transcript_retention: Option<std::time::Duration>,
+    /// How often the BM25 index is rebuilt when stale (#868); `None` (the test
+    /// default) = only at boot, as before, unless the test asks.
+    pub fts_refresh: Option<std::time::Duration>,
     /// Attach a DuckLake so `state.lake` is `Some` — otherwise always
     /// `None` (see `serve`'s `ServerConfig` construction). Tests for
     /// lake-durability behavior (#567: `/ingest/upload`'s synchronous
@@ -563,6 +566,7 @@ impl EscurelProcess {
             emit_edit_events: overrides.emit_edit_events,
             run_progress_keep: overrides.run_progress_keep.unwrap_or(50),
             run_transcript_retention: overrides.run_transcript_retention,
+            fts_refresh: overrides.fts_refresh,
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
