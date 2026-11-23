@@ -2788,6 +2788,7 @@ impl EscurelConfig {
             run_transcript_retention: run_transcript_retention(
                 std::env::var("ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS").ok(),
             )?,
+            fts_refresh: fts_refresh(std::env::var("ESCUREL_FTS_REFRESH_SECS").ok())?,
             shutdown_drain: match std::env::var("ESCUREL_SHUTDOWN_DRAIN_SECS") {
                 Ok(raw) if !raw.trim().is_empty() => std::time::Duration::from_secs(
                     raw.trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or(
@@ -3774,6 +3775,28 @@ fn run_transcript_retention(
         _ => DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS,
     };
     Ok((days > 0).then(|| std::time::Duration::from_secs(days.saturating_mul(86_400))))
+}
+
+/// The default for `ESCUREL_FTS_REFRESH_SECS` (#868).
+pub const DEFAULT_FTS_REFRESH_SECS: u64 = 30;
+
+/// `ESCUREL_FTS_REFRESH_SECS` (#868), as read: how often the BM25 index is rebuilt when pages
+/// changed since its last build; `0` = only at boot and rebuild (`None`), unset or blank is
+/// [`DEFAULT_FTS_REFRESH_SECS`], anything else refuses to start.
+fn fts_refresh(raw: Option<String>) -> Result<Option<std::time::Duration>, ConfigError> {
+    let secs = match raw {
+        Some(raw) if !raw.trim().is_empty() => {
+            raw.trim()
+                .parse::<u64>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    var: "ESCUREL_FTS_REFRESH_SECS",
+                    value: raw.clone(),
+                    reason: "expected a whole number of seconds (0 = only at boot and rebuild)",
+                })?
+        }
+        _ => DEFAULT_FTS_REFRESH_SECS,
+    };
+    Ok((secs > 0).then(|| std::time::Duration::from_secs(secs)))
 }
 
 /// Whether the listen address (`host:port`) only accepts connections from this machine.

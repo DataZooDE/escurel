@@ -17,10 +17,12 @@
 //! The `fts` extension has no incremental refresh
 //! (`docs/notes/discovered/2026-05-24-fts-no-refresh-pragma.md`):
 //! the BM25 index built at migration time is empty until the
-//! caller invokes [`Indexer::refresh_fts`]. This is intentional
-//! — every refresh is O(rows), so per-write rebuild is
-//! unacceptable; callers (and tests) refresh deliberately after
-//! a batch of writes.
+//! caller invokes [`Indexer::refresh_fts`]. Every refresh is O(rows)
+//! (~1 ms per page), so it is never run per write. Boot, rebuild and the
+//! pack tools call it; the server calls [`Indexer::refresh_fts_if_stale`]
+//! on a timer (`ESCUREL_FTS_REFRESH_SECS`, default 30), which rebuilds only
+//! when the index changed since the last build (#868). Until then a page
+//! written while serving is found by the vector arm only.
 //!
 //! ## Granularity + post-filter
 //!
@@ -368,8 +370,24 @@ impl Indexer {
     /// this from a debounce / compact job
     /// (`docs/notes/discovered/2026-05-24-fts-no-refresh-pragma.md`);
     /// tests call it directly between seeding and search.
+    /// [`Self::refresh_fts`] when the index changed since the last build (#868);
+    /// `false` (and no work) when it did not. The `fts` extension has no
+    /// incremental refresh, so without this a page written while serving stayed
+    /// out of the BM25 arm until the next restart. The server calls it on a timer
+    /// (`ESCUREL_FTS_REFRESH_SECS`). A full rebuild is ~1 ms per page.
+    pub async fn refresh_fts_if_stale(&self) -> Result<bool, IndexerError> {
+        if self.fts_epoch.load(std::sync::atomic::Ordering::Acquire) == self.mutation_epoch() {
+            return Ok(false);
+        }
+        self.refresh_fts().await?;
+        Ok(true)
+    }
+
     pub async fn refresh_fts(&self) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
+        // Read BEFORE the build: a write that lands after this (it waits for the
+        // lock) bumps the epoch again, so the next stale check rebuilds.
+        let epoch = self.mutation_epoch();
         // German full-text config (the corpus + UI are German): the snowball
         // `german` stemmer, a German stopword list (so function words like
         // der/die/von/bei don't pollute BM25), and an `ignore` regex that KEEPS
@@ -411,6 +429,8 @@ impl Indexer {
         // Folding it into the database file and truncating the WAL leaves
         // nothing to replay.
         conn.execute_batch("CHECKPOINT;")?;
+        self.fts_epoch
+            .store(epoch, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 

@@ -89,6 +89,9 @@ pub struct Indexer {
     /// [`Self::mutation_epoch`] against the last-published value and skips
     /// the publish when nothing changed. Monotone; only equality matters.
     mutation_epoch: AtomicU64,
+    /// The [`Self::mutation_epoch`] the BM25 index was last built at (#868);
+    /// `u64::MAX` until the first build.
+    pub(crate) fts_epoch: AtomicU64,
     /// Wall-clock bound on ONE authored query's execution, in milliseconds
     /// (#455).
     ///
@@ -506,6 +509,7 @@ impl Indexer {
                     .unwrap_or(u64::MAX),
             ),
             mutation_epoch: AtomicU64::new(0),
+            fts_epoch: AtomicU64::new(u64::MAX),
             query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),
             reranker: Arc::new(NoopReranker),
