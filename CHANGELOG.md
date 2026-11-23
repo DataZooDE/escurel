@@ -25,11 +25,18 @@ Changed:
   admin too: consumers hide every id under it as a system skill.
 
 Fixed:
+- **A page written while serving reaches lexical search (#868).** DuckDB's full-text index has no incremental
+  update, and only boot, rebuild and the pack tools rebuilt it, so a page written with `update_page` stayed out of
+  the BM25 arm until the next restart: everything an agent wrote during a pod's life was found by the vector arm
+  alone, and the boot-seeded system skills won the lexical arm (#845). The server now rebuilds the index every
+  `ESCUREL_FTS_REFRESH_SECS` (default 30; `0` = boot and rebuild only) when pages changed since the last build
+  (~1 ms per page, under the tenant lock).
 - **`%` and `_` in a `search` query are literal in the SQL lane (#856).** Since #849 a view's search columns are
   matched as one U+001F-joined text, so an unescaped `a%b` (or `a_b`) also matched a row whose `title` is `a` and
   `note` is `b`.
 
-**Upgrade:** move the gateway and the runner together. A sql_view skill page with `search_text` / `project` /
+**Upgrade:** move the gateway and the runner together. New optional env `ESCUREL_FTS_REFRESH_SECS` (default 30).
+A sql_view skill page with `search_text` / `project` /
 `projection_limit` beside `backend:`, or a tenant skill id starting with `escurel-`, is now refused on write: move
 the keys under `backend:` / rename the skill first.
 
