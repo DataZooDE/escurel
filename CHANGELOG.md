@@ -9,8 +9,10 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.24
+
 Added:
-- **A skill can keep its instances out of default search.** A skill page may declare
+- **A skill can keep its instances out of default search (#873).** A skill page may declare
   `search: {hidden: true, exact: [<field>, ...]}`. A `search` that names no `skill` and no `page_id` then leaves the
   skill's instances out of every lane (native, SQL-view, rows) before the top-k cut, so many small records no longer
   crowd free-text results; the skill page itself stays searchable. An exact lookup still finds one: a query that
@@ -22,17 +24,21 @@ Added:
   `search_exact`.
 
 Fixed:
-- **`diff_draft` reports a create with the empty-base sentinel as current while its page does not exist.** A draft
+- **`diff_draft` reports a create with the empty-base sentinel as current while its page does not exist (#872).** A draft
   filed with `base_sha256: ""` (the create sentinel) was compared with the absent head and answered
   `base_moved: true`, so a review UI marked every such create out of date although nothing had moved. It is
   `false` now until the page appears, and `true` once it exists (the create can then never promote). Promotion and
   the change-set check use the same rule; with a CRDT backend a sentinel create whose page is still absent is now promoted
   with the create CAS rather than a merge against its recorded `base_version`; the outcome is the same.
-- **A page seeded by the test harness is in lexical search.** `EscurelProcess` (and so `escurel-test-gateway`)
+- **A page seeded by the test harness is in lexical search (#874).** `EscurelProcess` (and so `escurel-test-gateway`)
   writes its fixtures after boot, and the BM25 index was built only at boot (the harness keeps the #868 refresh timer
   off), so seeded pages were found by the vector arm alone and a free-text search over a seeded tenant ranked by
   embedding only. The seed now builds the index once after the last page, as a server does for pages stored before
   boot. Test support only; the server is unchanged.
+
+**Upgrade:** move the gateway and the runner together; nothing to set. A skill page whose `search` key is not
+`{hidden: <bool>, exact: [<field>, ...]}` is now refused on write (`search_invalid`): check skill pages that already
+carry a `search` key before upgrading.
 
 ## v2026.11.23
 
