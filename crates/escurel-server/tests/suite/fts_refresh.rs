@@ -1,5 +1,7 @@
 //! A page written while serving reaches lexical search (#868). Real gateway,
 //! real HTTP: the BM25 index is rebuilt on the server's timer when stale.
+//! A fixture seeded by the harness is in the lexical arm from the start, as a
+//! page stored before boot is, with the timer off.
 
 use std::time::{Duration, Instant};
 
@@ -76,5 +78,33 @@ async fn a_page_written_while_serving_reaches_lexical_search() {
     assert!(
         score > ONE_ARM,
         "the page never reached the BM25 arm (score {score}): nothing rebuilt the index after the write"
+    );
+}
+
+#[tokio::test]
+async fn a_seeded_fixture_is_in_lexical_search_without_the_timer() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(
+                    "note",
+                    "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n",
+                )
+                .page(
+                    "markdown/instances/note/fresh.md",
+                    format!("---\nkind: instance\nskill: note\nid: fresh\n---\n# fresh\nThe {TOKEN} shipment.\n"),
+                )
+                .done(),
+        ),
+    })
+    .await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let score = fresh_score(&p, &admin).await;
+    assert!(
+        score > ONE_ARM,
+        "a seeded page is missing from the BM25 arm (score {score}): the seed did not build the index"
     );
 }

@@ -1009,6 +1009,16 @@ impl EscurelProcess {
                         )
                     });
             }
+            // A booting server indexes its stored pages and then builds the BM25 index; the seed
+            // is written after boot, and the harness keeps the refresh timer off unless a test
+            // asks (#868). Build it once here, so a seeded page is in the lexical arm as a page
+            // that was there at boot would be.
+            indexer.refresh_fts().await.unwrap_or_else(|e| {
+                panic!(
+                    "seed: refresh_fts for tenant `{}` failed: {e:?}",
+                    self.default_tenant
+                )
+            });
             return;
         }
         // No shared indexer (e.g. `disable_indexer = true`); fall
