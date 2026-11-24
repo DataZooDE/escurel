@@ -352,6 +352,7 @@ async fn page_scoped_search_is_confined_to_one_page() {
             Granularity::Block,
             None,
             Some(GLOBEX.0),
+            &[],
         )
         .await
         .unwrap();
@@ -381,6 +382,7 @@ async fn page_scoped_search_is_confined_to_one_page() {
             Granularity::Block,
             None,
             Some(GLOBEX.0),
+            &[],
         )
         .await
         .unwrap();

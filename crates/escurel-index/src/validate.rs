@@ -1748,6 +1748,11 @@ impl Indexer {
         issues.extend(check_fields(parsed.frontmatter.page_kind, fields));
         // The instance-body layout a skill declares (workbench P3-5).
         issues.extend(check_blocks(parsed.frontmatter.page_kind, fields));
+        // The `search:` block (hidden instances, exact-lookup fields).
+        issues.extend(crate::search_visibility::check_search(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
         // The generic rule declarations (immutable, unique, pack, per-field
         // rule attributes), linted where they are declared.
         issues.extend(crate::field_rules::check_skill_rules(

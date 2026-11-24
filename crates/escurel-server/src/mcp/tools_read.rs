@@ -216,6 +216,8 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
             .collect(),
         freeze_when: s.freeze_when,
         protected: s.protected,
+        search_hidden: s.search.hidden,
+        search_exact: s.search.exact,
     }
 }
 
@@ -1951,6 +1953,28 @@ pub(crate) async fn tool_search(
         .acl_context(&caller, &skills)
         .await
         .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?;
+    // A skill may keep its INSTANCES out of a search that names no skill and no page
+    // (`search: {hidden: true}`): every lane leaves them out, before fusion and the top-k cut,
+    // and only an exact id / `exact` field value brings one back (below).
+    let default_scope = escurel_index::search::is_default_scope(a.skill.as_deref(), page_id);
+    let hidden: Vec<(&str, &[String])> = if default_scope {
+        escurel_index::search_visibility::hidden_skills(&skills)
+    } else {
+        Vec::new()
+    };
+    let hidden_ids: Vec<&str> = hidden.iter().map(|(id, _)| *id).collect();
+    // The SQL-view and rows lanes read only skills in the catalogue they are given.
+    let lane_skills: std::borrow::Cow<'_, [escurel_index::SkillInfo]> = if hidden.is_empty() {
+        std::borrow::Cow::Borrowed(skills.as_slice())
+    } else {
+        std::borrow::Cow::Owned(
+            skills
+                .iter()
+                .filter(|s| !s.search.hidden)
+                .cloned()
+                .collect(),
+        )
+    };
     let mut lanes: Vec<Vec<escurel_index::SearchHit>> = Vec::with_capacity(variants.len() * 2);
     for q in &variants {
         let native = indexer
@@ -1964,6 +1988,7 @@ pub(crate) async fn tool_search(
                 granularity,
                 filter,
                 page_id,
+                &hidden_ids,
             )
             .await
             .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
@@ -1971,7 +1996,7 @@ pub(crate) async fn tool_search(
 
         if sql_lane_enabled {
             let candidates = indexer
-                .sql_view_search_candidates_with(q, a.skill.as_deref(), &skills)
+                .sql_view_search_candidates_with(q, a.skill.as_deref(), &lane_skills)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
             let sql_allowed = acl_filter_hits(indexer, &acl, &caller, candidates).await?;
@@ -1981,7 +2006,7 @@ pub(crate) async fn tool_search(
             // The ROWS lane: rows of `instances: rows` skills match on their key and `filterable:`
             // columns. Candidates only, ACL-filtered per row BEFORE fusion like every other lane.
             let rows = indexer
-                .rows_search_candidates_with(q, a.skill.as_deref(), &skills)
+                .rows_search_candidates_with(q, a.skill.as_deref(), &lane_skills)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search rows lane: {e}")))?;
             let rows_allowed = acl_filter_hits(indexer, &acl, &caller, rows).await?;
@@ -2009,6 +2034,22 @@ pub(crate) async fn tool_search(
         .rerank_hits(&variants[0], fused)
         .await
         .map_err(|e| JsonRpcError::internal(format!("search rerank: {e}")))?;
+    // Exact lookups of hidden instances: one bounded query, ACL-filtered like every lane
+    // (INV-ACL-FUSION), ranked ahead of the fused hits. A skill-page-only search has none.
+    if !hidden.is_empty() {
+        let scope = escurel_index::ExactScope {
+            page_kind: pt,
+            as_of: a.as_of.as_deref(),
+            scenario: a.scenario.as_deref(),
+            filter,
+        };
+        let exact = indexer
+            .exact_hidden_hits(&variants, &hidden, scope)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search exact: {e}")))?;
+        let exact = acl_filter_hits(indexer, &acl, &caller, exact).await?;
+        final_hits = prepend_exact_hits(exact, final_hits);
+    }
     final_hits.truncate(a.k);
 
     let out: Vec<Value> = final_hits
@@ -2040,7 +2081,8 @@ pub(crate) async fn tool_search(
     // Say so: silent emptiness reads as "no such record".
     if sql_lane_enabled {
         let mut unsearched = Vec::new();
-        for skill in &skills {
+        // `lane_skills`: a hidden skill is not searched by intent, so it is not named here either.
+        for skill in lane_skills.iter() {
             if a.skill.as_deref().is_some_and(|f| f != skill.id) {
                 continue;
             }
@@ -2065,6 +2107,31 @@ pub(crate) async fn tool_search(
         }
     }
     Ok(result)
+}
+
+/// Put exact hits of hidden instances ahead of the fused ranking: each scores above the best
+/// fused hit (so a client sorting by score keeps the order), and a page already in the ranking is
+/// not listed twice.
+pub(super) fn prepend_exact_hits(
+    exact: Vec<escurel_index::SearchHit>,
+    fused: Vec<escurel_index::SearchHit>,
+) -> Vec<escurel_index::SearchHit> {
+    if exact.is_empty() {
+        return fused;
+    }
+    let top = fused.iter().map(|h| h.score).fold(0.0_f64, f64::max);
+    let n = exact.len();
+    let ids: std::collections::HashSet<String> = exact.iter().map(|h| h.page_id.clone()).collect();
+    let mut out: Vec<escurel_index::SearchHit> = exact
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut h)| {
+            h.score = top + (n - i) as f64;
+            h
+        })
+        .collect();
+    out.extend(fused.into_iter().filter(|h| !ids.contains(&h.page_id)));
+    out
 }
 
 /// Apply the fail-closed per-instance read ACL to one lane's candidates,
@@ -2259,4 +2326,40 @@ pub(super) fn issue_to_json(issue: &Issue) -> Value {
         obj["suggestion"] = json!(s);
     }
     obj
+}
+
+#[cfg(test)]
+mod exact_hit_tests {
+    use super::prepend_exact_hits;
+    use escurel_index::SearchHit;
+    use escurel_md::PageKind;
+
+    fn hit(page_id: &str, score: f64) -> SearchHit {
+        SearchHit {
+            page_id: page_id.to_owned(),
+            slug: None,
+            skill: "s".to_owned(),
+            page_kind: PageKind::Instance,
+            anchor: None,
+            snippet: String::new(),
+            score,
+            similarity: 0.0,
+            frontmatter_excerpt: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn exact_hits_come_first_score_highest_and_are_not_repeated() {
+        let out = prepend_exact_hits(
+            vec![hit("x", 0.0), hit("y", 0.0)],
+            vec![hit("a", 3.5), hit("y", 1.0), hit("b", 0.5)],
+        );
+        let ids: Vec<&str> = out.iter().map(|h| h.page_id.as_str()).collect();
+        assert_eq!(ids, ["x", "y", "a", "b"]);
+        assert!(out[0].score > out[1].score && out[1].score > out[2].score);
+        // Nothing exact: the fused ranking is returned untouched.
+        let out = prepend_exact_hits(Vec::new(), vec![hit("a", 0.2)]);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].score - 0.2).abs() < f64::EPSILON);
+    }
 }

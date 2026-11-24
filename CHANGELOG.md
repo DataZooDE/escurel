@@ -9,6 +9,18 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Added:
+- **A skill can keep its instances out of default search.** A skill page may declare
+  `search: {hidden: true, exact: [<field>, ...]}`. A `search` that names no `skill` and no `page_id` then leaves the
+  skill's instances out of every lane (native, SQL-view, rows) before the top-k cut, so many small records no longer
+  crowd free-text results; the skill page itself stays searchable. An exact lookup still finds one: a query that
+  equals (trimmed, case-insensitive) an instance's page id, slug / `id`, or the scalar value of an `exact` field
+  returns it first, through the same read ACL and `page_kind` / `filter` / `as_of` / `scenario` constraints.
+  `skill:` searches the instances as before. The exact lookup reads stored pages, so a hidden `instances: rows`
+  skill is reached only by `skill:` (warning `search_hidden_rows`). A malformed block is refused on write with
+  `search_invalid`; an undeclared `exact` field is the warning `search_exact_unknown`. `list_skills` publishes `search_hidden` /
+  `search_exact`.
+
 Fixed:
 - **`diff_draft` reports a create with the empty-base sentinel as current while its page does not exist.** A draft
   filed with `base_sha256: ""` (the create sentinel) was compared with the absent head and answered

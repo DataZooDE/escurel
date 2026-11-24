@@ -162,6 +162,7 @@ mod run_control_events;
 mod run_tool_calls;
 mod run_transcript_retention;
 mod schema_ergonomics;
+mod search_hidden;
 mod search_hygiene;
 mod self_packaging;
 mod serve_demo;

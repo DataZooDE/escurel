@@ -270,6 +270,9 @@ pub(super) fn blocking_issues<'a>(
             // A backend key beside `backend:` is ignored by the binding (#861); a skill id under the
             // reserved `escurel-` prefix is hidden by every consumer as a system skill (#857).
             "misplaced_backend_key" | "skill_id_reserved" => true,
+            // A `search:` block the search tool cannot read would hide (or fail to hide) a skill's
+            // instances other than as written.
+            "search_invalid" => true,
             // A `chat-channel` mapping (#830) is authority: one that maps nothing must not be stored
             // as if it applied. A new system skill, so no tenant holds such a page yet.
             "chat_channel_invalid" => true,
