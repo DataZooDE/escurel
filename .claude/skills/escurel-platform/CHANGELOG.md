@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.35.0 — a skill can keep its instances out of default search
+
+- A skill page may declare `search: {hidden: true, exact: [<field>, ...]}`. Default `search` (no `skill`, no
+  `page_id`) then leaves its instances out of every lane; the skill page stays searchable. A query that equals
+  (trimmed, case-insensitive) a hidden instance's page id, slug / `id`, or the scalar value of an `exact` field still
+  returns it, first, subject to the read ACL and the search's other constraints; list values never match. `skill:`
+  searches them as before. Exact hits read stored pages: hiding an `instances: rows` skill leaves its rows reachable
+  only by `skill:` / `list_instances` (warning `search_hidden_rows`). Malformed blocks are refused (`search_invalid`);
+  an undeclared `exact` field warns (`search_exact_unknown`). `list_skills` rows carry `search_hidden` / `search_exact` when set (references/01, 02).
+
 ## 0.34.1 — `diff_draft` and the create sentinel
 
 - `diff_draft` answers `base_moved: false` for a create drafted with `base_sha256: ""` while its page does not

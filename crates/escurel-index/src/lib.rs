@@ -55,6 +55,7 @@ pub mod retrieval;
 mod run_transcripts;
 pub mod schema;
 pub mod search;
+pub mod search_visibility;
 pub mod skill_pages;
 pub mod snapshot;
 pub mod system_skills;
@@ -108,6 +109,7 @@ pub use retrieval::RetrievalConfig;
 pub use run_transcripts::StoredTranscript;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};
+pub use search_visibility::{ExactScope, SearchSetting};
 pub use skill_pages::SkillWritePolicy;
 pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,

@@ -147,6 +147,9 @@ pub struct SkillInfo {
     /// `protected: [delete, move]`: the removal actions refused for this skill's instances
     /// (`instance_protected`). Empty when undeclared.
     pub protected: Vec<String>,
+    /// `search: {hidden, exact}`: whether this skill's instances stay out of a default search,
+    /// and which fields reveal one by exact value ([`crate::search_visibility`]).
+    pub search: crate::search_visibility::SearchSetting,
 }
 
 /// One invocation parameter a skill page declares via `params:`
@@ -954,6 +957,7 @@ impl Indexer {
                 blocks: parse_blocks(&fm),
                 freeze_when: crate::freeze::parse_freeze_when(&fm),
                 protected: crate::freeze::parse_protected(&fm),
+                search: crate::search_visibility::parse_search(&fm),
             });
         }
 

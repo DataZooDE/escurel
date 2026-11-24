@@ -159,6 +159,7 @@ declare none are unchanged.
 | skill `lease: {holder, expires, while?}` | its instances are leases: `holder` names the field with the current holder, `expires` the field with the expiry in Unix seconds, `while: {field: value}` the state in which it is live | `skill_rule_malformed` if ill-formed; `lease_fence` on a refused write |
 | skill `strict_required_frontmatter: true` | `required_frontmatter` and `required: true` fields must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
 | skill `pack: {id, version, sha256}` (or a list) | declares an approved release | `skill_rule_malformed` if ill-formed |
+| skill `search: {hidden: true, exact: [field, ...]}` | the skill's instances are left out of a default `search` and found there only by an exact id or `exact` field value (see `search`); `hidden` is a boolean, `exact` a list of field names (a letter or `_`, then letters, digits, `_`, `-`), no other key | `search_invalid` if ill-formed; warnings: `search_exact_unknown` for an `exact` field the skill does not declare (only when it declares any field), `search_hidden_rows` for a hidden `instances: rows` skill |
 | instance `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must equal the declared one | `pack_malformed`, `pack_unknown`, `pack_hash_mismatch` |
 
 **Immutable instances and removal.** An instance of a skill declared
@@ -317,6 +318,37 @@ one with `skill` (for its skill page, with `page_kind: "skill"`) to search
 it; `resolve`, `expand` and `list_skills` always reach them.
 The `escurel-` skill-id prefix is reserved for them: a tenant skill page with
 such an id is refused on write with `skill_id_reserved` (#857).
+
+**A skill may hide its instances from default search.** A skill page that
+declares `search: {hidden: true}` keeps its *instances* out of a search that
+names no `skill` and no `page_id`: out of the native lane (both arms, before
+the top-`k` cut) and out of the SQL-view and rows lanes, so the top `k` is filled
+with other content. The skill page itself is catalogue and stays searchable.
+Such a search still returns a hidden instance when a query variant, trimmed
+and compared case-insensitively, **equals**
+
+- its page id (`markdown/instances/<skill>/<id>.md`),
+- its slug or frontmatter `id`, or
+- the value of one of the fields listed in the skill's `search.exact`, when
+  that value is a scalar (string, number or boolean, compared as text).
+  List and mapping values never match.
+
+These exact hits come first, ahead of the fused ranking (their `score` is set
+above the best fused score), and count towards `k`. They are page-grain (no
+`anchor`, no `similarity`, whatever the `granularity`). They are read with one
+query over the stored pages, bounded at 200 rows with identity matches (page id,
+slug, `id`) read first, then pass the same per-instance read ACL as every lane
+(INV-ACL-FUSION) before the cut to `k`, and honour `page_kind` (none for
+`skill`), `filter`, `as_of` and `scenario` as the native lane does. A substring
+or a non-`exact` field does not reveal a hidden instance. The lookup covers
+page-backed instances (markdown, `sql_view`); the rows of an `instances: rows`
+skill are not pages, so a hidden rows skill is reached only with `skill:` or
+`list_instances` (declaring it is the warning `search_hidden_rows`). `hidden` is
+about ranking, not access: the instances stay readable through `skill:`,
+`resolve`, `expand` and `list_instances` by whoever may read them. `search` with
+`skill: <hidden skill>` searches its instances as before; `resolve`, `expand`,
+`list_instances` and `query_instance` are unaffected. `list_skills` publishes
+the setting as `search_hidden: true` and `search_exact` (omitted when unset).
 
 **The SQL lane matches literally (#856).** A `sql_view` instance is a
 candidate when one of its `search_text` columns contains `q`

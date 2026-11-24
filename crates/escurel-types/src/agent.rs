@@ -651,6 +651,14 @@ pub struct Skill {
     /// `protected:` — `delete` and/or `move`: removal actions refused with `instance_protected`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<String>,
+    /// `search: {hidden: true}`: this skill's instances are left out of a `search` that names no
+    /// `skill` and no `page_id`. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub search_hidden: bool,
+    /// `search: {exact: [...]}`: the fields whose exact value still finds a hidden instance in such
+    /// a search. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_exact: Vec<String>,
 }
 
 /// A skill's `schedule_budget:` (#819): the cap on scheduled runs per UTC day.

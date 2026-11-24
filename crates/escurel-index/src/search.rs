@@ -457,6 +457,7 @@ impl Indexer {
             Granularity::Block,
             None,
             None,
+            &[],
         )
         .await
     }
@@ -469,6 +470,11 @@ impl Indexer {
     /// `filter` object is a frontmatter post-filter applied after
     /// hydration (see [`crate::filter`]); `granularity` controls
     /// block- vs page-level collapse.
+    ///
+    /// `hidden_skills` names skills whose INSTANCES a search that names no
+    /// `skill` and no `page_id` leaves out (their `search: {hidden: true}`,
+    /// [`crate::search_visibility`]); their skill pages stay in. Ignored when
+    /// `skill` or `page_id` is set.
     #[allow(clippy::too_many_arguments)]
     pub async fn search_with(
         &self,
@@ -481,6 +487,7 @@ impl Indexer {
         granularity: Granularity,
         filter: Option<&serde_json::Value>,
         page_id: Option<&str>,
+        hidden_skills: &[&str],
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -503,7 +510,8 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_params) = build_filters(page_kind, skill, as_of, scenario, page_id);
+        let (filter_sql, filter_params) =
+            build_filters(page_kind, skill, as_of, scenario, page_id, hidden_skills);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
@@ -632,6 +640,15 @@ impl Indexer {
     }
 }
 
+/// A search that names no `skill` and no `page_id`: the scope in which system
+/// skills and the instances of `search: {hidden: true}` skills are left out.
+/// One rule for every lane, so the native lane and the server's other lanes
+/// cannot disagree.
+#[must_use]
+pub fn is_default_scope(skill: Option<&str>, page_id: Option<&str>) -> bool {
+    skill.is_none() && page_id.is_none()
+}
+
 /// Build the shared `WHERE` tail (page-type, skill, `as_of`, and
 /// `scenario`) plus the bind params in `?` order. `as_of` keeps blocks
 /// born at or before the cut (`blocks.at_ts <= ?`); untimed blocks
@@ -644,6 +661,7 @@ fn build_filters(
     as_of: Option<&str>,
     scenario: Option<&str>,
     page_id: Option<&str>,
+    hidden_skills: &[&str],
 ) -> (String, Vec<String>) {
     let mut sql = String::new();
     let mut params = Vec::new();
@@ -667,7 +685,8 @@ fn build_filters(
     if let Some(s) = skill {
         sql.push_str(" AND blocks.skill = ?");
         params.push(s.to_owned());
-    } else if page_id.is_none() {
+    }
+    if is_default_scope(skill, page_id) {
         // escurel's system skills are seeded into every tenant and outranked its
         // content in a free-text search (#845). A search that names no skill and
         // no page leaves them out here, in both ranking arms, so the top-k is
@@ -682,6 +701,15 @@ fn build_filters(
             vec!["?"; ids.len()].join(", ")
         ));
         params.extend(ids.iter().map(|id| (*id).to_owned()));
+        // A skill may keep its INSTANCES out of the same default search
+        // (`search: {hidden: true}`); its skill page is catalogue and stays.
+        if !hidden_skills.is_empty() {
+            sql.push_str(&format!(
+                " AND (blocks.page_type = 'skill' OR blocks.skill NOT IN ({}))",
+                vec!["?"; hidden_skills.len()].join(", ")
+            ));
+            params.extend(hidden_skills.iter().map(|id| (*id).to_owned()));
+        }
     }
     if let Some(ts) = as_of {
         sql.push_str(" AND (blocks.at_ts <= ? OR blocks.at_ts IS NULL)");
@@ -891,7 +919,7 @@ fn hydrate_blocks(
     Ok(out)
 }
 
-fn snippet_from_body(body: &str) -> String {
+pub(crate) fn snippet_from_body(body: &str) -> String {
     // Cheap snippet: first ~200 chars, trimmed at a word boundary
     // when possible. Real query-aware snippet generation lands
     // later — agents currently get enough context from the full

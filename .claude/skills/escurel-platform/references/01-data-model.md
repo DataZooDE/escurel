@@ -239,6 +239,38 @@ Frontmatter rules the indexer enforces at write time:
   gateway neither enforces the layout nor reads bodies by it — it is a
   declaration for renderers.
 
+- A skill may keep its **instances out of default search** with
+  **`search:`** — for many small records (rows, operations, log entries)
+  that would otherwise crowd free-text results:
+
+  ```yaml
+  search:
+    hidden: true          # default false
+    exact: [code]         # optional: fields whose exact value finds an instance
+  ```
+
+  With `hidden: true`, a `search` that names no `skill` and no `page_id`
+  leaves the skill's instances out of every lane, before the top-`k` cut.
+  The skill page itself stays searchable. Such a search still returns a
+  hidden instance, ranked first, when a query (trimmed, case-insensitive)
+  **equals** its page id, its slug / frontmatter `id`, or the scalar value
+  (string, number or bool, compared as text) of one of its `exact` fields;
+  a substring does not, and list or map values never match. Exact hits are
+  page-grain (no anchor, no similarity) and are read from stored pages (at
+  most 200 per lookup, page id / slug / `id` matches first), so they cover
+  markdown and `sql_view` instances but not the rows of an `instances: rows`
+  skill (hiding one is the warning `search_hidden_rows`: reach its rows with
+  `skill:` or `list_instances`). The instance's read ACL and the search's
+  `page_kind`, `filter`, `as_of` and `scenario` still apply. `hidden` is not
+  access control: whoever may read an instance still reaches it by name. `search` with `skill: <id>`, `resolve`, `expand`,
+  `list_instances` and `query_instance` are unaffected. A malformed block
+  (not a map, `hidden` not a bool, `exact` not a list of field names, an
+  unknown key) is refused on write with **`search_invalid`**; an `exact`
+  entry the skill does not declare (`fields:`, `required_frontmatter`,
+  `optional_frontmatter`) is the warning `search_exact_unknown`, raised only
+  when the skill declares any field.
+  `list_skills` publishes `search_hidden: true` and `search_exact` when set.
+
 Three frontmatter fields are **server-governed** — your app never writes
 them: `layer:` (stamped by pack import; a draft declaring `layer: base@…`
 is rejected `layer_read_only`), `promotable:` (curator/admin-set; a
