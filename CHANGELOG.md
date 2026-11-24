@@ -9,6 +9,14 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Fixed:
+- **`diff_draft` reports a create with the empty-base sentinel as current while its page does not exist.** A draft
+  filed with `base_sha256: ""` (the create sentinel) was compared with the absent head and answered
+  `base_moved: true`, so a review UI marked every such create out of date although nothing had moved. It is
+  `false` now until the page appears, and `true` once it exists (the create can then never promote). Promotion and
+  the change-set check use the same rule; with a CRDT backend a sentinel create whose page is still absent is now promoted
+  with the create CAS rather than a merge against its recorded `base_version`; the outcome is the same.
+
 ## v2026.11.23
 
 Changed:

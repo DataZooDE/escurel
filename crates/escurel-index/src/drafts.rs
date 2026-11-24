@@ -156,6 +156,18 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// Whether a draft's target has moved since the draft was taken: the stored
+/// page (`head_sha256`, `None` when it does not exist) is not the one the
+/// draft names as its base.
+///
+/// The empty base `""` is the create sentinel and names "no page": it has
+/// not moved while the page is absent, and has once the page exists. A draft
+/// with no base at all (`None`) expects no page in the same way.
+#[must_use]
+pub fn base_moved(head_sha256: Option<&str>, base_sha256: Option<&str>) -> bool {
+    head_sha256 != base_sha256.filter(|b| !b.is_empty())
+}
+
 fn row_to_draft(row: &duckdb::Row<'_>) -> duckdb::Result<DraftInfo> {
     Ok(DraftInfo {
         draft_id: row.get(0)?,
@@ -662,4 +674,29 @@ impl Indexer {
 #[must_use]
 pub fn content_is_archived(content: &str) -> bool {
     crate::indexer::is_archived(content)
+}
+
+#[cfg(test)]
+mod base_moved_tests {
+    use super::base_moved;
+
+    #[test]
+    fn the_empty_base_names_no_page_and_every_other_base_names_its_head() {
+        let cases = [
+            (None, None, false),
+            (None, Some(""), false),
+            (Some("h"), Some(""), true),
+            (Some("h"), Some("h"), false),
+            (Some("h"), Some("x"), true),
+            (None, Some("x"), true),
+            (Some("h"), None, true),
+        ];
+        for (head, base, moved) in cases {
+            assert_eq!(
+                base_moved(head, base),
+                moved,
+                "head {head:?}, base {base:?}"
+            );
+        }
+    }
 }
