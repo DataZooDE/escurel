@@ -1913,3 +1913,55 @@ async fn diff_draft_shows_what_approving_would_change() {
         "a creation reports every key as an addition: {diff}"
     );
 }
+
+/// A create drafted with the empty-base sentinel (`base_sha256: ""`) is new
+/// and current while its page does not exist. `diff_draft` used to compare the
+/// absent head with `""` and report it as moved, so a review UI marked every
+/// such create out of date although nothing had moved. Once the page appears,
+/// the create can never promote, and then it IS moved.
+#[tokio::test]
+async fn diff_draft_reports_a_sentinel_create_as_current_until_the_page_appears() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let target = "markdown/instances/note/sentinel.md";
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": target,
+            "content": body("sentinel", "new page."),
+            "base_sha256": "",
+        }),
+    )
+    .await;
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("draft_id: {created}"))
+        .to_owned();
+
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(diff["exists"], json!(false), "{diff}");
+    assert_eq!(
+        diff["base_moved"],
+        json!(false),
+        "a sentinel create against an absent page has not moved: {diff}"
+    );
+
+    // The page appears underneath the draft: now the create can never land.
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": target, "content": body("sentinel", "written meanwhile."), "base_sha256": "" }),
+    )
+    .await;
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(diff["exists"], json!(true), "{diff}");
+    assert_eq!(
+        diff["base_moved"],
+        json!(true),
+        "a page that appeared under a create draft has moved: {diff}"
+    );
+}

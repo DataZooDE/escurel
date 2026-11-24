@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.34.1 — `diff_draft` and the create sentinel
+
+- `diff_draft` answers `base_moved: false` for a create drafted with `base_sha256: ""` while its page does not
+  exist, and `true` once it does. A client that special-cased the sentinel (`base_moved && !(base === "" &&
+  !exists)`) can drop the workaround; it stays correct.
+
 ## 0.34.0 — system skills out of default search; refused skill-page mistakes
 
 - Default `search` (no `skill`, no `page_id`) no longer returns escurel's system skills (`escurel`, `escurel-agent`,

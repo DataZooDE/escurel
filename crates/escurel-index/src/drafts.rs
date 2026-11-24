@@ -156,6 +156,18 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// Whether a draft's target has moved since the draft was taken: the stored
+/// page (`head_sha256`, `None` when it does not exist) is not the one the
+/// draft names as its base.
+///
+/// The empty base `""` is the create sentinel and names "no page": it has
+/// not moved while the page is absent, and has once the page exists. A draft
+/// with no base at all (`None`) expects no page in the same way.
+#[must_use]
+pub fn base_moved(head_sha256: Option<&str>, base_sha256: Option<&str>) -> bool {
+    head_sha256 != base_sha256.filter(|b| !b.is_empty())
+}
+
 fn row_to_draft(row: &duckdb::Row<'_>) -> duckdb::Result<DraftInfo> {
     Ok(DraftInfo {
         draft_id: row.get(0)?,

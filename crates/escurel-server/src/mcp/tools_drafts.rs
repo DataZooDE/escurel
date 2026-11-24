@@ -1068,7 +1068,8 @@ pub(super) async fn tool_promote_draft(
     let head_sha = head_markdown
         .as_deref()
         .map(escurel_index::drafts::content_hash);
-    let moved = head_sha != draft.base_sha256;
+    let moved =
+        escurel_index::drafts::base_moved(head_sha.as_deref(), draft.base_sha256.as_deref());
     match (&draft.base_version, moved) {
         (Some(version), true) => {
             write_args["base_version"] = json!(version);
@@ -1367,8 +1368,11 @@ pub(super) async fn tool_diff_draft(
     // Moved = the target is not what it was when this was drafted, INCLUDING
     // the case of a page that has appeared since a create-draft was taken:
     // both make promotion a merge rather than a write, and the reviewer is
-    // better served by one honest flag than by two subtly different ones.
-    let base_moved = head_sha != draft.base_sha256;
+    // better served by one honest flag than by two subtly different ones. A
+    // create with the empty-base sentinel against a page that is still absent
+    // has not moved.
+    let base_moved =
+        escurel_index::drafts::base_moved(head_sha.as_deref(), draft.base_sha256.as_deref());
 
     let head_fm = head
         .as_deref()
@@ -1724,9 +1728,7 @@ pub(super) async fn tool_promote_changeset(
         // The same CAS promotion will apply, asked before anything lands. An
         // `already_applied` member (the page already holds these bytes) is
         // NOT a conflict — that is the interrupted-promotion retry.
-        let unchanged_create = m.base_sha256.as_deref() == Some("") && head_sha.is_none();
-        if !unchanged_create
-            && head_sha != m.base_sha256
+        if escurel_index::drafts::base_moved(head_sha.as_deref(), m.base_sha256.as_deref())
             && head_sha.as_deref() != Some(&m.content_sha256)
         {
             issues.push(json!({
