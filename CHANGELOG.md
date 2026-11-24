@@ -28,6 +28,11 @@ Fixed:
   `false` now until the page appears, and `true` once it exists (the create can then never promote). Promotion and
   the change-set check use the same rule; with a CRDT backend a sentinel create whose page is still absent is now promoted
   with the create CAS rather than a merge against its recorded `base_version`; the outcome is the same.
+- **A page seeded by the test harness is in lexical search.** `EscurelProcess` (and so `escurel-test-gateway`)
+  writes its fixtures after boot, and the BM25 index was built only at boot (the harness keeps the #868 refresh timer
+  off), so seeded pages were found by the vector arm alone and a free-text search over a seeded tenant ranked by
+  embedding only. The seed now builds the index once after the last page, as a server does for pages stored before
+  boot. Test support only; the server is unchanged.
 
 ## v2026.11.23
 
