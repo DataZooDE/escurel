@@ -9,6 +9,21 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Changed:
+- **A capture inside a run takes the run's cascade lineage, not the agent's.** The runner trusts
+  `provenance.runner` on a capture its per-run agent makes (`captured_via` = the runner), so an agent could write
+  `depth: 0`, an empty `instance_path`, or no block at all and reset the cascade's depth budget and cycle check.
+  For a per-run token whose run's `run:<run_id>:started` was filed by the token's own runner (`act.sub`), the
+  gateway now rebuilds the block itself from that event on every capture path (`capture_event`, `start_operation`,
+  `/ingest`), whatever the agent sent (no block, a forged one, a non-object): `root_event_id` (the token's),
+  `depth` = the run's + 1, `lineage_path` (the run's, plus the event id, minted now when none was given),
+  `instance_path` (the run's, plus the instance the run works on, as a runner hop records what it wrote; never
+  the capture's own target, which admission would read as a cycle), `parent_run_id`, `parent_event_id` and
+  `trace_id`; the stored `root_event_id` is the token's too. A per-run upload keeps its delegation
+  (`captured_via`), so the runner admits it with that lineage. `run-started` records the trigger's
+  `instance_path` for this. **Limit:** a run with no `run-started` from its own runner (not filed, or filed by
+  someone else) keeps only the root override, so the per-root budget holds but depth and paths are the agent's.
+
 ## v2026.11.25.3
 
 Changed:

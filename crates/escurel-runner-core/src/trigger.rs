@@ -620,6 +620,75 @@ mod tests {
     }
 
     #[test]
+    fn a_gateway_stamped_capture_is_admitted_on_a_fresh_target_and_a_cycle_on_a_revisited_one() {
+        // #882: the gateway writes a per-run capture's block from the run's `run-started` (depth = the run's + 1,
+        // instance_path = the run's + the run's target). Admission then sees the run's real depth and history.
+        let fresh_provenance = || {
+            serde_json::json!({
+                "captured_by": "agent:note",
+                "captured_via": "escurel-runner",
+                "runner": { "root_event_id": "ROOT0", "depth": 3, "lineage_path": ["ROOT0"], "instance_path": [] }
+            })
+        };
+        let stamped = |target: &str| {
+            let mut event = sample_event();
+            event.instance_page_id = target.to_owned();
+            event.provenance = serde_json::json!({
+                "captured_by": "agent:note",
+                "captured_via": "escurel-runner",
+                "runner": {
+                    "root_event_id": "ROOT0", "depth": 3, "lineage_path": ["ROOT0", "h1", "h2", "h3"],
+                    "instance_path": ["markdown/instances/note/a.md", "markdown/instances/note/c.md"]
+                }
+            });
+            Trigger::from_event_gated(&event, "acme", "escurel-runner")
+        };
+        let ledger = crate::Ledger::open_in_memory().expect("ledger");
+        let limits = crate::LoopLimits {
+            max_depth: 8,
+            max_runs_per_root: 100,
+        };
+        let fresh = stamped("markdown/instances/note/d.md");
+        assert_eq!(fresh.lineage.depth, 3);
+        assert_eq!(fresh.lineage.root_event_id, "ROOT0");
+        assert_eq!(
+            crate::admit(&fresh, &limits, &ledger).expect("admit"),
+            crate::Admission::Admit
+        );
+        let revisited = stamped("markdown/instances/note/a.md");
+        assert_eq!(
+            crate::admit(&revisited, &limits, &ledger).expect("admit"),
+            crate::Admission::DeadLetter(crate::DeadLetterReason::Cycle)
+        );
+        // The per-root budget counts the run's root, not the capture's own id.
+        let spent = crate::Ledger::open_in_memory().expect("ledger");
+        for n in 0..3 {
+            let mut prior = sample_event();
+            prior.event_id = format!("prior-{n}");
+            prior.provenance = fresh_provenance();
+            let _ = spent
+                .begin_run(&Trigger::from_event_gated(&prior, "acme", "escurel-runner"))
+                .expect("begin");
+        }
+        let tight = crate::LoopLimits {
+            max_depth: 8,
+            max_runs_per_root: 2,
+        };
+        assert_eq!(
+            crate::admit(&fresh, &tight, &spent).expect("admit"),
+            crate::Admission::DeadLetter(crate::DeadLetterReason::BudgetExceeded)
+        );
+        let deep = crate::LoopLimits {
+            max_depth: 2,
+            max_runs_per_root: 100,
+        };
+        assert_eq!(
+            crate::admit(&fresh, &deep, &ledger).expect("admit"),
+            crate::Admission::DeadLetter(crate::DeadLetterReason::DepthExceeded)
+        );
+    }
+
+    #[test]
     fn a_hop_emitted_by_a_delegated_agent_is_still_the_runners_own_lineage() {
         // #510: a run now captures its cascade hops as `agent:<skill>`, not as
         // the runner. The forge guard keys on the server-stamped identity, so

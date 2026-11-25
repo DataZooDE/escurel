@@ -600,18 +600,34 @@ async fn record_and_dispatch_ingest(
         .map(str::to_owned);
     // capture_event returns the first writer's row when attempts race.
     let attempt_id = ulid::Ulid::new().to_string();
+    // An upload a run makes stays in the run's cascade (#882): the run's lineage, and the delegation
+    // (`captured_via`) the runner trusts it by. Anyone else's upload carries no delegated run.
+    let acl = caller.acl();
+    let mut ingest_event_id = caller_event_id.clone();
+    let mut upload = Some(json!({
+        "blob_id": blob_id,
+        "content_type": content_type,
+        "handler_skill": handler,
+        "by": subject,
+        "ingest_attempt_id": attempt_id,
+    }));
+    let run_root = match super::tools_write::stamp_run_lineage(
+        indexer,
+        &acl,
+        &mut ingest_event_id,
+        &mut upload,
+    )
+    .await
+    {
+        Ok(root) => root,
+        Err(e) => {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": e.message }))).into_response();
+        }
+    };
     let mut provenance = super::tools_write::stamp_captured_by(
-        Some(json!({
-            "blob_id": blob_id,
-            "content_type": content_type,
-            "handler_skill": handler,
-            "by": subject,
-            "ingest_attempt_id": attempt_id,
-        })),
+        upload,
         subject,
-        // An upload is made by whoever presented the bearer; the
-        // ingest path carries no delegated run.
-        None,
+        run_root.as_ref().and(caller.actor.as_deref()),
     )
     .unwrap_or_else(|| json!({}));
     // An upload inside a run carries the run's requester forward (gateway-owned).
@@ -623,7 +639,7 @@ async fn record_and_dispatch_ingest(
     }
     let event = indexer
         .capture_event(NewEvent {
-            event_id: caller_event_id,
+            event_id: ingest_event_id,
             at: None,
             source: "ingest".to_owned(),
             mime: content_type.to_owned(),
@@ -636,6 +652,7 @@ async fn record_and_dispatch_ingest(
             // un-triaged third-party content too, and without the stamp it
             // would be the one inbox entry the per-event ACL cannot scope.
             provenance: Some(provenance),
+            root_event_id: run_root,
             ..Default::default()
         })
         .await;

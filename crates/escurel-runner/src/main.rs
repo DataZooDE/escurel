@@ -2834,6 +2834,7 @@ async fn dispatch_loop(
             parent_run_id: trigger.lineage.parent_run_id.clone(),
             depth: trigger.lineage.depth,
             lineage_path: trigger.lineage.lineage_path.clone(),
+            instance_path: trigger.lineage.instance_path.clone(),
             trace_id: Some(trace_id.clone()),
             harness: step_harness.name().to_owned(),
             model: step_model,

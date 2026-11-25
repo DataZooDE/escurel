@@ -127,6 +127,7 @@ pub async fn recover_pending(
                         parent_run_id: None,
                         depth: rec.depth,
                         lineage_path: vec![rec.event_id.clone()],
+                        instance_path: Vec::new(),
                         trace_id: None,
                         harness: "recovery".to_owned(),
                         model: None,
