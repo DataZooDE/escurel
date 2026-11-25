@@ -9,6 +9,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.25.4
+
 Changed:
 - **A capture inside a run takes the run's cascade lineage, not the agent's.** The runner trusts
   `provenance.runner` on a capture its per-run agent makes (`captured_via` = the runner), so an agent could write
