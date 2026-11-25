@@ -9,8 +9,10 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.25
+
 Added:
-- **Separation of duties by person: the `same_person` claim.** One human may reach a tenant under several subjects
+- **Separation of duties by person: the `same_person` claim (#876).** One human may reach a tenant under several subjects
   (one per identity provider). An issuer that knows this names the other subjects in the person's token
   (`same_person: ["<subject>", ...]`, at most 32 strings of 1 to 256 bytes without control characters; anything else
   is an invalid token, on every path). With the claim present (even empty) `promote_draft` and `promote_changeset`
@@ -22,8 +24,13 @@ Added:
   person's own drafts under any listed subject are always visible to them and can be withdrawn. The claim separates
   draft review only: a reviewer's correction (`content` on `promote_draft`) is the reviewer's own write, a draft a
   person's workbench agent filed is the person's (another person reviews it), branch merges are not covered, and an
-  admin token without the claim may still vouch (`decided_by`) as before. Without the claim review is unchanged. A machine token (run, agent, actor, narrowed skill) never
-  carries a person: the claim is ignored there. `whoami` reports `same_person`.
+  admin token without the claim may still vouch (`decided_by`) as before. Without the claim review is unchanged. A
+  machine token (run, agent, actor, narrowed skill) never carries a person: the claim is ignored there. `whoami`
+  reports `same_person`.
+
+**Upgrade:** move the gateway and the runner together; nothing to set. A token issuer that starts minting
+`same_person` turns on separation of review by person for those tokens: a person can no longer promote their own
+drafts, and a person who may not write a page can no longer reject another person's draft of it.
 
 ## v2026.11.24
 
