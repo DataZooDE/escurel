@@ -70,6 +70,7 @@ pub fn create_drafts_pg_table_sql() -> String {
             run_id          VARCHAR, \
             root_event_id   VARCHAR, \
             minted_by       VARCHAR, \
+            requested_by    VARCHAR, \
             PRIMARY KEY (tenant, draft_id)\
         );"
     )
@@ -89,6 +90,7 @@ pub fn migrate_drafts_pg_columns_sql() -> Vec<String> {
         "run_id VARCHAR",
         "root_event_id VARCHAR",
         "minted_by VARCHAR",
+        "requested_by VARCHAR",
     ]
     .into_iter()
     .map(|col| {

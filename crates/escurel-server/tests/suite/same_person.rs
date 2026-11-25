@@ -797,3 +797,320 @@ async fn a_branch_an_agent_token_opens_is_its_minters_too() {
     let merged = call(&p, &other, "merge_branch", json!({ "name": "agent/work" })).await;
     assert_eq!(merged["ok"], json!(true), "{merged}");
 }
+
+async fn capture(p: &EscurelProcess, token: &str, event_id: &str, provenance: Value) -> Value {
+    let captured = call(
+        p,
+        token,
+        "capture_event",
+        json!({ "event_id": event_id, "label_skill": "note", "title": event_id, "at": "2026-11-25T09:00:00Z",
+                "provenance": provenance }),
+    )
+    .await;
+    assert!(captured.get("error").is_none(), "{captured}");
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let listed = call(p, &admin, "list_events", json!({ "event_id": event_id })).await;
+    listed["events"][0].clone()
+}
+
+#[tokio::test]
+async fn a_runs_drafts_and_branches_are_the_requesters_own() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let alias = person(&p, ENTRA, Some(&[GOOGLE]));
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let eve = person(&p, EVE, Some(&[]));
+    // jr asks for a run: the run's root event is jr's capture (gateway-stamped `captured_by`).
+    let root = "01JRROOTEVENT0000000000001";
+    capture(&p, &jr, root, json!({})).await;
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-1", root);
+    let filed = draft(&p, &run, "by-run").await;
+    let stored = call(&p, &admin, "get_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(stored["draft"]["author"], json!("agent:note"), "{stored}");
+    assert_eq!(
+        stored["draft"]["minted_by"],
+        json!("escurel-runner"),
+        "the minter stays the token's: {stored}"
+    );
+    assert_eq!(
+        stored["draft"]["requested_by"],
+        json!(GOOGLE),
+        "resolved when filed: {stored}"
+    );
+    // Stored, so purging the root event afterwards changes nothing.
+    let purged = call(
+        &p,
+        &admin,
+        "admin_purge_events",
+        json!({ "label_skill": "note", "keep_latest": 0, "apply": true }),
+    )
+    .await;
+    assert!(purged.get("error").is_none(), "{purged}");
+    // The requester, under either subject, does not approve the run's draft; an admin naming them neither.
+    for token in [&jr, &alias] {
+        let own = call(&p, token, "promote_draft", json!({ "draft_id": filed })).await;
+        assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    }
+    let vouched = call(
+        &p,
+        &admin,
+        "promote_draft",
+        json!({ "draft_id": filed, "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(
+        vouched["issues"][0]["code"],
+        json!("self_review"),
+        "{vouched}"
+    );
+    let accepted = call(&p, &eve, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(
+        accepted["ok"],
+        json!(true),
+        "another person approves: {accepted}"
+    );
+
+    // A changeset the run files is refused as a whole for the requester.
+    let root2 = "01JRROOTEVENT0000000000002";
+    capture(&p, &jr, root2, json!({})).await;
+    let run2 = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-2", root2);
+    let cs = call(
+        &p,
+        &run2,
+        "create_draft",
+        json!({ "target_page_id": page("run-cs"), "content": body("run-cs"), "new_changeset": true }),
+    )
+    .await;
+    let changeset = cs["draft"]["changeset_id"]
+        .as_str()
+        .expect("changeset")
+        .to_owned();
+    let batch = call(
+        &p,
+        &alias,
+        "promote_changeset",
+        json!({ "changeset_id": changeset }),
+    )
+    .await;
+    assert_eq!(batch["issues"][0]["code"], json!("self_review"), "{batch}");
+
+    // A branch the run opens is the requester's too.
+    let made = call(&p, &run2, "create_branch", json!({ "name": "agent/run-2" })).await;
+    assert_eq!(made["branch"]["requested_by"], json!(GOOGLE), "{made}");
+    call(
+        &p,
+        &run2,
+        "update_page",
+        json!({ "page_id": page("run-branch"), "content": body("run-branch"), "branch": "agent/run-2" }),
+    )
+    .await;
+    // Naming the requester's OTHER subject is not caught (`decided_by` is not resolved against an identity
+    // registry, a documented limit); a person's own token is checked through its `same_person` claim.
+    let own = call(
+        &p,
+        &admin,
+        "merge_branch",
+        json!({ "name": "agent/run-2", "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    let merged = call(
+        &p,
+        &admin,
+        "merge_branch",
+        json!({ "name": "agent/run-2", "decided_by": EVE }),
+    )
+    .await;
+    assert_eq!(merged["ok"], json!(true), "{merged}");
+
+    // A run no person asked for (a machine-captured root, e.g. a schedule) has no requester.
+    let machine_root = "01JRMACHINEROOT00000000001";
+    let scheduler = p.mint_token_with_sub(TENANT, Role::Admin, "agent:scheduler");
+    capture(&p, &scheduler, machine_root, json!({})).await;
+    let scheduled = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-3", machine_root);
+    let filed = draft(&p, &scheduled, "by-scheduled-run").await;
+    let accepted = call(&p, &jr, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}
+
+#[tokio::test]
+async fn naming_someone_elses_root_does_not_free_the_minter() {
+    let p = start_signing().await;
+    let bob = person(&p, EVE, Some(&[]));
+    let root = "01JRBOBSROOT00000000000001";
+    capture(&p, &bob, root, json!({})).await;
+    // An admin mints a run token (act.sub = the admin) under bob's root, through the gateway's own tool.
+    let alice = p.mint_token_with_sub(TENANT, Role::Admin, "admin:alice");
+    let minted = call(
+        &p,
+        &alice,
+        "mint_run_token",
+        json!({ "run_id": "run-a", "skill": "note", "root_event_id": root, "ttl_secs": 600 }),
+    )
+    .await;
+    let agent = minted["token"].as_str().expect("token").to_owned();
+    let filed = draft(&p, &agent, "alice-run").await;
+    let own = call(&p, &alice, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(
+        own["issues"][0]["code"],
+        json!("self_review"),
+        "the minter stays an author: {own}"
+    );
+    let named = call(&p, &bob, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(
+        named["issues"][0]["code"],
+        json!("self_review"),
+        "so does the named root's person: {named}"
+    );
+}
+
+#[tokio::test]
+async fn a_cascade_keeps_the_requester_whatever_the_agent_writes() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let bob = person(&p, EVE, Some(&[]));
+    let root = "01JRCASCADEROOT00000000001";
+    capture(&p, &jr, root, json!({})).await;
+    let bobs = "01JRBOBSOTHER0000000000001";
+    // Nobody writes the requester stamp themselves.
+    let stripped = capture(&p, &bob, bobs, json!({ "run_requester": GOOGLE })).await;
+    assert!(
+        stripped["provenance"].get("run_requester").is_none(),
+        "{stripped}"
+    );
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-c", root);
+    // A forged lineage block naming bob's event is overwritten with the token's; the requester rides along.
+    let forged = capture(
+        &p,
+        &run,
+        "01JRHOPFORGED0000000000001",
+        json!({ "runner": { "root_event_id": bobs, "depth": 1 }, "run_requester": EVE }),
+    )
+    .await;
+    assert_eq!(
+        forged["provenance"]["runner"]["root_event_id"],
+        json!(root),
+        "{forged}"
+    );
+    assert_eq!(forged["root_event_id"], json!(root), "{forged}");
+    assert_eq!(
+        forged["provenance"]["run_requester"],
+        json!(GOOGLE),
+        "{forged}"
+    );
+    // An omitted block still carries the requester, so a run rooted at that hop is jr's again, however long
+    // the chain.
+    let mut hop_root = root.to_owned();
+    for n in 0..10 {
+        let hop = format!("01JRHOPOMITTED00000000{n:04}");
+        let hop_token = p.mint_token_for_run(
+            TENANT,
+            Role::Admin,
+            "agent:note",
+            &format!("run-h{n}"),
+            &hop_root,
+        );
+        let omitted = capture(&p, &hop_token, &hop, json!({})).await;
+        assert_eq!(
+            omitted["provenance"]["run_requester"],
+            json!(GOOGLE),
+            "hop {n}: {omitted}"
+        );
+        hop_root = hop;
+    }
+    let next = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-d", &hop_root);
+    let filed = draft(&p, &next, "by-next-hop").await;
+    let own = call(&p, &jr, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    let accepted = call(&p, &bob, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}
+
+#[tokio::test]
+async fn a_root_purged_before_the_run_files_its_work_is_refused() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let root = "01JRPURGEDROOT000000000001";
+    capture(&p, &jr, root, json!({})).await;
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-p", root);
+    let purged = call(
+        &p,
+        &admin,
+        "admin_purge_events",
+        json!({ "label_skill": "note", "keep_latest": 0, "apply": true }),
+    )
+    .await;
+    assert!(purged.get("error").is_none(), "{purged}");
+    // Who asked for the run is now unknown: separation of duties does not fail open.
+    for (tool, args) in [
+        (
+            "create_draft",
+            json!({ "target_page_id": page("after-purge"), "content": body("after-purge") }),
+        ),
+        ("create_branch", json!({ "name": "agent/after-purge" })),
+        (
+            "capture_event",
+            json!({ "event_id": "01JRAFTERPURGE00000000001", "label_skill": "note", "title": "x" }),
+        ),
+    ] {
+        let (_, refused) = rpc(&p, &run, tool, args).await;
+        assert_eq!(
+            refused["error"]["data"]["code"],
+            json!("run_root_unavailable"),
+            "{tool}: {refused}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_requester_stamp_only_counts_where_the_gateway_could_have_written_it() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    // A row from before the stamp was gateway-owned: jr's own capture carrying a forged `run_requester`.
+    let indexer = p.indexer().expect("indexer");
+    let root = "01JRLEGACYFORGED0000000001";
+    indexer
+        .capture_event(escurel_index::NewEvent {
+            event_id: Some(root.to_owned()),
+            label_skill: "note".to_owned(),
+            title: "legacy".to_owned(),
+            provenance: Some(json!({ "captured_by": GOOGLE, "run_requester": EVE })),
+            ..Default::default()
+        })
+        .await
+        .expect("legacy capture");
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-l", root);
+    let filed = draft(&p, &run, "legacy-run").await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let stored = call(&p, &admin, "get_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(stored["draft"]["requested_by"], json!(GOOGLE), "{stored}");
+    let own = call(&p, &jr, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+}
+
+#[tokio::test]
+async fn an_agents_legacy_requester_stamp_without_a_run_names_nobody() {
+    let p = start().await;
+    let eve = person(&p, EVE, Some(&[]));
+    // An agent's capture from before the stamp was gateway-owned, with no lineage of its own.
+    let indexer = p.indexer().expect("indexer");
+    let root = "01JRLEGACYAGENT00000000001";
+    indexer
+        .capture_event(escurel_index::NewEvent {
+            event_id: Some(root.to_owned()),
+            label_skill: "note".to_owned(),
+            title: "legacy".to_owned(),
+            provenance: Some(json!({ "captured_by": "agent:scheduler", "run_requester": EVE })),
+            ..Default::default()
+        })
+        .await
+        .expect("legacy capture");
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note", "run-s", root);
+    let filed = draft(&p, &run, "legacy-agent-run").await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let stored = call(&p, &admin, "get_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(stored["draft"]["requested_by"], Value::Null, "{stored}");
+    let accepted = call(&p, &eve, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}

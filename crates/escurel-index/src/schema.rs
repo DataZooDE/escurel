@@ -225,6 +225,7 @@ impl Migrator {
         Self::ensure_draft_base_version(conn)?;
         Self::ensure_draft_run_lineage(conn)?;
         Self::ensure_draft_minted_by(conn)?;
+        Self::ensure_draft_requested_by(conn)?;
         Ok(())
     }
 
@@ -265,6 +266,23 @@ impl Migrator {
             return Ok(());
         }
         conn.execute_batch(STAGE_25_DRAFT_MINTED_BY)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.requested_by` (the person who asked for an agent author's run) exists. Presence-checked
+    /// and CHECKPOINTed like [`Migrator::ensure_draft_minted_by`].
+    pub fn ensure_draft_requested_by(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' AND column_name = 'requested_by'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_28_DRAFT_REQUESTED_BY)?;
         conn.execute_batch("CHECKPOINT;")?;
         Ok(())
     }
@@ -420,6 +438,16 @@ impl Migrator {
         )?;
         if minted != 1 {
             conn.execute_batch(STAGE_26_BRANCH_MINTED_BY)?;
+            conn.execute_batch("CHECKPOINT;")?;
+        }
+        let requested: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'branches' AND column_name = 'requested_by'",
+            [],
+            |row| row.get(0),
+        )?;
+        if requested != 1 {
+            conn.execute_batch(STAGE_27_BRANCH_REQUESTED_BY)?;
             conn.execute_batch("CHECKPOINT;")?;
         }
         // Per-page fork points. A plain table (no function-valued default, no ALTER), so it is idempotent
@@ -606,6 +634,7 @@ impl Migrator {
         Self::ensure_draft_base_version(conn)?;
         Self::ensure_draft_run_lineage(conn)?;
         Self::ensure_draft_minted_by(conn)?;
+        Self::ensure_draft_requested_by(conn)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -738,6 +767,8 @@ const STAGE_23_RUN_TRANSCRIPTS: &str = include_str!("../sql/0022_run_transcripts
 const STAGE_24_SQL_VIEW_SEARCH_TEXT: &str = include_str!("../sql/0023_sql_view_search_text.sql");
 const STAGE_25_DRAFT_MINTED_BY: &str = include_str!("../sql/0024_drafts_minted_by.sql");
 const STAGE_26_BRANCH_MINTED_BY: &str = include_str!("../sql/0025_branches_minted_by.sql");
+const STAGE_27_BRANCH_REQUESTED_BY: &str = include_str!("../sql/0026_branches_requested_by.sql");
+const STAGE_28_DRAFT_REQUESTED_BY: &str = include_str!("../sql/0027_drafts_requested_by.sql");
 
 #[cfg(test)]
 mod tests {

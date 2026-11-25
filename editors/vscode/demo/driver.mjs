@@ -16,10 +16,14 @@ const bearer = tokens.bearer;
 // Seeding the document corpus is an operator act: a skill without a create ACL is admin-write-only for uploads.
 const seedBearer = tokens.admin_bearer ?? bearer;
 
-async function call(name, args) {
+// The signed-in person asks for the runs (their captures are the runs' roots), so another person accepts
+// what the runs propose: the gateway refuses a run's requester its own decision (`self_review`).
+const reviewerBearer = tokens.reviewer_bearer ?? bearer;
+
+async function call(name, args, token = bearer) {
   const res = await fetch(`${gw.gateway_url}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -106,7 +110,8 @@ const a = await call('capture_event', {
   source: 'demo',
 });
 const csA = await until('the first changeset', () => openChangesetOn(page('order-4500123')));
-await call('promote_changeset', { changeset_id: csA.changeset_id });
+const promotedA = await call('promote_changeset', { changeset_id: csA.changeset_id }, reviewerBearer);
+if (!promotedA.ok) throw new Error(`promote_changeset: ${JSON.stringify(promotedA)}`);
 await until('the cascade hop', async () => {
   const l = await call('list_lineage', { root_event_id: a.event_id });
   return l.nodes.some((n) => n.type === 'event' && n.id !== a.event_id);

@@ -223,15 +223,16 @@ pub(super) async fn tool_create_branch(
         }));
     }
 
+    // Who an agent author acts for (as on drafts): the minter is an author of the branch too.
+    let requested_by =
+        crate::mcp::tools_drafts::requester_of_run(indexer, &caller, "create_branch").await?;
     match indexer
         .create_branch(
             name,
             caller.subject,
             &base_version,
-            // Who an agent author acts for (as on drafts): the minter is an author of the branch too.
-            caller
-                .actor
-                .filter(|_| caller.subject.starts_with("agent:")),
+            crate::mcp::tools_drafts::minter_of(&caller).as_deref(),
+            requested_by.as_deref(),
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_branch: {e}")))?
@@ -314,6 +315,7 @@ fn branch_to_json(b: &escurel_index::BranchInfo) -> Value {
         "decided_by": b.decided_by,
         "created_at": b.created_at,
         "minted_by": b.minted_by,
+        "requested_by": b.requested_by,
     })
 }
 
@@ -565,7 +567,7 @@ pub(super) async fn tool_merge_branch(
         &caller,
         &decided_by,
         &branch.author,
-        branch.minted_by.as_deref(),
+        &[branch.minted_by.as_deref(), branch.requested_by.as_deref()],
     ) {
         let mut refusal = crate::mcp::tools_drafts::self_review_refusal(&branch.name);
         refusal["issues"][0]["location"] = json!("name");

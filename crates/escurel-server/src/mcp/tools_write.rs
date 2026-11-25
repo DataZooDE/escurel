@@ -2327,6 +2327,7 @@ pub(super) fn stamp_captured_by(
     if let Some(map) = obj.as_object_mut() {
         map.remove(crate::bridge_gate::ASKED_BY_FIELD);
         map.remove(crate::bridge_gate::CAPTURED_GROUPS_FIELD);
+        map.remove(super::tools_drafts::RUN_REQUESTER_FIELD);
     }
     match actor {
         Some(a) => obj[escurel_index::CAPTURED_VIA_FIELD] = json!(a),
@@ -2848,8 +2849,40 @@ pub(super) async fn tool_capture_event(
     let (root_event_id, run_id) = match (&control, &thread_close) {
         (Some(c), _) => (c.root_event_id.clone(), c.run_id.clone()),
         (_, Some(t)) => (Some(t.root_event_id.clone()), None),
-        _ => lineage_from_provenance(a.provenance.as_ref()),
+        _ => match caller.root_event_id.filter(|r| !r.is_empty()) {
+            // A per-run token captures inside its run: the lineage is the verified token's, never the
+            // caller's `provenance.runner` block (which the runner trusts for the next hop, and which
+            // separation of duties follows back to the person who asked for the run).
+            Some(root) => {
+                if let Some(block) = a
+                    .provenance
+                    .as_mut()
+                    .and_then(|p| p.get_mut("runner"))
+                    .and_then(Value::as_object_mut)
+                {
+                    block.insert("root_event_id".to_owned(), json!(root));
+                }
+                (
+                    Some(root.to_owned()),
+                    caller
+                        .run_id
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_owned)
+                        .or_else(|| lineage_from_provenance(a.provenance.as_ref()).1),
+                )
+            }
+            None => lineage_from_provenance(a.provenance.as_ref()),
+        },
     };
+    let mut provenance =
+        stamp_captured_by(a.provenance, caller.subject, caller.actor).map(|mut p| {
+            crate::bridge_gate::stamp_turn(&mut p, bridge, caller.token_groups);
+            p
+        });
+    // A capture inside a run carries the run's requester forward (gateway-owned).
+    if let Some(p) = provenance.as_mut() {
+        super::tools_drafts::stamp_run_requester(indexer, &caller, "capture_event", p).await?;
+    }
     let requested = NewEvent {
         event_id: a.event_id,
         at: a.at,
@@ -2859,10 +2892,7 @@ pub(super) async fn tool_capture_event(
         instance_page_id: a.instance_page_id,
         title: a.title,
         body: a.body,
-        provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor).map(|mut p| {
-            crate::bridge_gate::stamp_turn(&mut p, bridge, caller.token_groups);
-            p
-        }),
+        provenance,
         kind,
         root_event_id,
         run_id,
@@ -3291,13 +3321,17 @@ pub(super) async fn tool_start_operation(
     // board-existence idempotency check above collapses sequential retries, and
     // for a rare concurrent same-key race the reducer's content-addressed step
     // ids (§3.6) collapse the plan to one execution even if two invoke folds land.
-    let provenance = stamp_captured_by(
+    let mut provenance = stamp_captured_by(
         Some(json!({
             "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
         })),
         caller.subject,
         caller.actor,
     );
+    // A workflow a run starts is the run's requester's too (gateway-owned).
+    if let Some(p) = provenance.as_mut() {
+        super::tools_drafts::stamp_run_requester(indexer, &caller, "start_operation", p).await?;
+    }
     let requested = NewEvent {
         event_id: None,
         at: None,

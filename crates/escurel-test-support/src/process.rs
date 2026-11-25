@@ -913,6 +913,27 @@ impl EscurelProcess {
             .expect("Client::connect")
     }
 
+    /// Capture each of `event_ids` in `tenant` as a run's root event, asked for by the subject `requester`.
+    /// Separation of duties finds the person who asked for a run from its root, and a per-run token naming a
+    /// root the gateway does not hold is refused (`run_root_unavailable`), so a test that mints run tokens
+    /// ([`Self::mint_token_for_run`]) seeds their roots first.
+    ///
+    /// # Panics
+    /// When a capture fails, or the process was not spawned with `AuthMode::TestIssuer`.
+    pub async fn capture_run_roots(&self, tenant: &str, requester: &str, event_ids: &[&str]) {
+        let token = self.mint_token_with_sub(tenant, Role::Admin, requester);
+        let client = McpTestClient::new(self.mcp_url(), Some(token));
+        for id in event_ids {
+            client
+                .call_ok(
+                    "capture_event",
+                    serde_json::json!({ "event_id": id, "label_skill": "run-root", "title": id }),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("capture_run_roots {id}: {e:?}"));
+        }
+    }
+
     /// Typed MCP-over-HTTP client targeting `POST /mcp`. Pre-
     /// loaded with a bearer token for the default `"acme"` tenant
     /// when auth is enabled; for `AuthMode::Disabled` no

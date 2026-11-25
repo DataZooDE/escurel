@@ -167,11 +167,13 @@ async fn a_run_over_row_instances_drafts_into_the_markdown_side_and_never_the_ro
     assert!(content.contains("delivery_risk: low"), "{content}");
     assert!(content.contains("folded event"), "{content}");
 
-    // One promotion of the changeset publishes both; the ROW is exactly as the source has it.
+    // One promotion of the changeset publishes both; the ROW is exactly as the source has it. Alice asked for
+    // the run, so another person accepts what it proposes (separation of duties).
     let changeset = fold["changeset_id"].as_str().unwrap();
+    let bob = gw.mint_token_with_sub(TENANT, Role::Agent, "bob");
     let promoted = call(
         &gw,
-        &alice,
+        &bob,
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )

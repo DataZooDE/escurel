@@ -23,7 +23,7 @@ fn sha(s: &str) -> String {
 }
 
 async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+    let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides::default(),
         fixtures: Some(
@@ -34,7 +34,10 @@ async fn start() -> EscurelProcess {
                 .done(),
         ),
     })
-    .await
+    .await;
+    // The run tokens these tests mint name these roots (`run_root_unavailable` otherwise).
+    p.capture_run_roots(TENANT, "test:requester", &[ROOT]).await;
+    p
 }
 
 async fn call(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> Value {

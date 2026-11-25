@@ -305,6 +305,7 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "run_id": d.run_id,
         "root_event_id": d.root_event_id,
         "minted_by": d.minted_by,
+        "requested_by": d.requested_by,
     })
 }
 
@@ -804,14 +805,9 @@ pub(super) async fn tool_create_draft(
             // agent's run.
             run_id: caller.run_id.map(str::to_owned),
             root_event_id: caller.root_event_id.map(str::to_owned),
-            // Who an agent author acts for: a token minted for an agent (`agent:<id>` subject) names its minter
-            // in `act.sub`, and the minter is an author of what it proposes, for separation of duties. (A
-            // workbench agent token already carries the human as its subject, so the human is the author.) From
-            // the verified token, never an argument.
-            minted_by: caller
-                .actor
-                .filter(|_| caller.subject.starts_with("agent:"))
-                .map(str::to_owned),
+            // Who an agent author acts for, an author too for separation of duties (`minter_of`).
+            minted_by: minter_of(&caller),
+            requested_by: requester_of_run(indexer, &caller, "create_draft").await?,
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -1032,7 +1028,12 @@ pub(super) async fn tool_promote_draft(
     if service_needs_human(&caller, &subject) {
         return Ok(service_needs_human_refusal(&draft.draft_id));
     }
-    if self_review(&caller, &subject, &draft.author, draft.minted_by.as_deref()) {
+    if self_review(
+        &caller,
+        &subject,
+        &draft.author,
+        &[draft.minted_by.as_deref(), draft.requested_by.as_deref()],
+    ) {
         return Ok(self_review_refusal(&draft.draft_id));
     }
     let landing = match crate::write_back::run(
@@ -1825,11 +1826,15 @@ pub(super) async fn tool_promote_changeset(
     if service_needs_human(&caller, &subject) {
         return Ok(service_needs_human_refusal(&a.changeset_id));
     }
-    if open
-        .iter()
-        .any(|m| self_review(&caller, &subject, &m.author, m.minted_by.as_deref()))
-    {
-        return Ok(self_review_refusal(&a.changeset_id));
+    for m in &open {
+        if self_review(
+            &caller,
+            &subject,
+            &m.author,
+            &[m.minted_by.as_deref(), m.requested_by.as_deref()],
+        ) {
+            return Ok(self_review_refusal(&a.changeset_id));
+        }
     }
 
     // Each member lands through the ordinary single-write path, which wants a
@@ -2028,17 +2033,115 @@ pub(super) fn self_review(
     caller: &AclCaller<'_>,
     decided_by: &str,
     author: &str,
-    minted_by: Option<&str>,
+    also: &[Option<&str>],
 ) -> bool {
     // Without a verifier there are no people to separate (dev / on-host mode).
     if caller.unauthenticated {
         return false;
     }
-    // The author, and the person who minted the agent token that filed it (`minted_by`), are both authors.
+    // The author, and whoever an agent author acted for (`minted_by`, a run's requester), are all authors.
     std::iter::once(author)
-        .chain(minted_by.filter(|m| !m.is_empty()))
+        .chain(also.iter().flatten().copied().filter(|m| !m.is_empty()))
         .any(|a| decided_by == a || (caller.service.is_none() && caller.is_same_person(a)))
 }
+
+/// Who an agent author's token was minted by (`act.sub`), recorded as the draft's or branch's `minted_by`.
+/// `None` unless the subject is an `agent:<id>` token (a workbench agent token already carries the person as
+/// its subject, so the person is the author). From the verified token, never an argument.
+pub(super) fn minter_of(caller: &AclCaller<'_>) -> Option<String> {
+    caller
+        .actor
+        .filter(|_| caller.subject.starts_with("agent:"))
+        .map(str::to_owned)
+}
+
+/// The person an event names as having asked for it: the gateway-stamped `asked_by` (a bridge turn), else
+/// `captured_by`, unless that is a machine or group subject (`agent:*`, `group:*`, `escurel`, `escurel:*`).
+pub(super) fn requester_in(provenance: &Value) -> Option<&str> {
+    [
+        provenance
+            .get(crate::bridge_gate::ASKED_BY_FIELD)
+            .and_then(Value::as_str),
+        escurel_index::captured_by(provenance),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|s| {
+        !s.is_empty()
+            && !s.starts_with("agent:")
+            && !s.starts_with("group:")
+            && *s != "escurel"
+            && !s.starts_with("escurel:")
+    })
+}
+
+/// The person who asked for the run a per-run agent token works in, resolved once, when the token's work is
+/// filed (`create_draft`, `create_branch`, and every capture: `capture_event`, `start_operation`, `/ingest`) and
+/// stored with it. Read from the run's root event: its `run_requester` stamp when the gateway could have written
+/// it (a per-run capture: `captured_by` an `agent:` subject, rooted at another event), else [`requester_in`]. `None`
+/// for a person's own token, a write outside a run, a run with no root event (`root_event_id` = `run_id`) or one
+/// no person asked for (a schedule). A named root the gateway does not hold (purged, or never captured) is
+/// refused (`run_root_unavailable`): separation of duties does not fail open.
+pub(super) async fn requester_of_run(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    tool: &str,
+) -> Result<Option<String>, JsonRpcError> {
+    if !caller.subject.starts_with("agent:") {
+        return Ok(None);
+    }
+    let Some(root) = caller.root_event_id.filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(event) = indexer
+        .get_event(root)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{tool}: the run's root event: {e}")))?
+    else {
+        if caller.run_id == Some(root) {
+            return Ok(None);
+        }
+        return Err(JsonRpcError::forbidden(format!(
+            "{tool}: the run's root event `{root}` is not held, so the person who asked for the run is unknown"
+        ))
+        .with_code("run_root_unavailable", false));
+    };
+    let p = &event.provenance;
+    // A stored event's root defaults to its own id, so only a root that is ANOTHER event marks a capture made
+    // inside a run. (A stamp a caller wrote before the gateway owned it, on a row that also forged its lineage,
+    // can only name the wrong person and so refuse them; it never frees the requester.)
+    let stamped = escurel_index::captured_by(p).is_some_and(|by| by.starts_with("agent:"))
+        && event
+            .root_event_id
+            .as_deref()
+            .is_some_and(|r| !r.is_empty() && r != event.event_id);
+    Ok(p.get(RUN_REQUESTER_FIELD)
+        .and_then(Value::as_str)
+        .filter(|s| stamped && !s.trim().is_empty())
+        .or_else(|| requester_in(p))
+        .map(str::to_owned))
+}
+
+/// Stamp [`RUN_REQUESTER_FIELD`] on a per-run token's capture (gateway-owned; see [`requester_of_run`]).
+pub(crate) async fn stamp_run_requester(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    tool: &str,
+    provenance: &mut Value,
+) -> Result<(), JsonRpcError> {
+    if let (Some(requester), Some(map)) = (
+        requester_of_run(indexer, caller, tool).await?,
+        provenance.as_object_mut(),
+    ) {
+        map.insert(RUN_REQUESTER_FIELD.to_owned(), json!(requester));
+    }
+    Ok(())
+}
+
+/// The gateway-owned provenance stamp on a per-run token's capture naming the person who asked for the run, so
+/// a run rooted at that capture keeps the same requester. Removed from every caller-supplied provenance.
+pub(crate) const RUN_REQUESTER_FIELD: &str = "run_requester";
 
 /// A built-in service credential decides only for a named human (`decided_by`, someone other than itself):
 /// a service is not a person, so a decision it makes without one would record no one who decided.
@@ -2146,4 +2249,32 @@ fn promote_requires_human(id: &str) -> Value {
             "suggestion": "leave it open: it appears in Awaiting You for a person to approve",
         }],
     })
+}
+
+#[cfg(test)]
+mod requester_tests {
+    use super::requester_in;
+    use serde_json::json;
+
+    #[test]
+    fn a_bridge_turns_asker_wins_over_the_capturing_principal() {
+        let p = json!({ "captured_by": "group:sales", "asked_by": "entra:t:jr" });
+        assert_eq!(requester_in(&p), Some("entra:t:jr"));
+    }
+
+    #[test]
+    fn a_person_who_captured_is_the_requester() {
+        assert_eq!(
+            requester_in(&json!({ "captured_by": "google:jr" })),
+            Some("google:jr")
+        );
+    }
+
+    #[test]
+    fn machine_captures_name_no_requester() {
+        for by in ["agent:note", "escurel", "escurel:schedule-webhook", " "] {
+            assert_eq!(requester_in(&json!({ "captured_by": by })), None, "{by}");
+        }
+        assert_eq!(requester_in(&json!({})), None);
+    }
 }

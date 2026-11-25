@@ -140,7 +140,8 @@ pub fn create_drafts_lake_table_sql() -> String {
             base_version    VARCHAR, \
             run_id          VARCHAR, \
             root_event_id   VARCHAR, \
-            minted_by       VARCHAR\
+            minted_by       VARCHAR,\
+            requested_by    VARCHAR\
         );"
     )
 }
@@ -172,6 +173,7 @@ pub fn attach_drafts_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Sna
         "root_event_id VARCHAR",
         "seq BIGINT",
         "minted_by VARCHAR",
+        "requested_by VARCHAR",
     ] {
         conn.execute_batch(&format!(
             "ALTER TABLE {APPEND_LAKE_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
