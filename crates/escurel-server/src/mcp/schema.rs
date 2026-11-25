@@ -393,7 +393,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "changeset_id": { "type": "string" },
                     "reason": { "type": "string", "description": "Ignored on promote; used by `discard_changeset`." },
-                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (an admin or a service credential; a service credential must name one, never the author)" }
                 }
             }),
         ),
@@ -467,7 +467,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({
                 "type": "object",
                 "required": ["name"],
-                "properties": { "name": { "type": "string" }, "reason": { "type": "string", "description": "Ignored on merge; used by `abandon_branch`." } }
+                "properties": { "name": { "type": "string" }, "reason": { "type": "string", "description": "Ignored on merge; used by `abandon_branch`." }, "decided_by": { "type": "string", "description": "the HUMAN who decided, when an admin or an admin service credential merges on their behalf; a service credential must name one, never the branch author or minter" } }
             }),
         ),
         tool_entry(
@@ -565,7 +565,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "draft_id": { "type": "string" },
                     "reason": { "type": "string", "description": "Ignored on promote; used by `discard_draft`." },
                     "content": { "type": "string", "description": "Approve-with-an-edit: the corrected bytes to land INSTEAD of the stored draft (validated like `create_draft`, against the draft's own base_sha256)." },
-                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (an admin or a service credential; a service credential must name one, never the author)" }
                 }
             }),
         ),

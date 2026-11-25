@@ -550,3 +550,250 @@ async fn a_gateway_without_a_verifier_has_no_people_to_separate() {
         "dev mode promotes its own draft: {promoted}"
     );
 }
+
+async fn start_signing() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            signing: true,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .done(),
+        ),
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_draft_an_agent_token_proposes_is_its_minters_own() {
+    let p = start_signing().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let admin = p.mint_token(TENANT, Role::Admin);
+    // A workbench agent token (`mint_agent_token`) carries the person as its subject: the person is the author.
+    let minted = call(
+        &p,
+        &jr,
+        "mint_agent_token",
+        json!({ "skill": "note", "ttl_secs": 600 }),
+    )
+    .await;
+    let workbench = minted["token"].as_str().expect("token").to_owned();
+    let by_workbench = draft(&p, &workbench, "by-workbench-agent").await;
+    let stored = call(&p, &admin, "get_draft", json!({ "draft_id": by_workbench })).await;
+    assert_eq!(stored["draft"]["author"], json!(GOOGLE), "{stored}");
+    let own = call(
+        &p,
+        &jr,
+        "promote_draft",
+        json!({ "draft_id": by_workbench }),
+    )
+    .await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+
+    // A token minted for an agent (`agent:<id>` subject) names its minter in `act.sub`: the minter is an author.
+    let agent = p.mint_token_acting_as(TENANT, "agent:scribe", GOOGLE);
+    let filed = draft(&p, &agent, "by-agent").await;
+    let stored = call(&p, &admin, "get_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(stored["draft"]["author"], json!("agent:scribe"), "{stored}");
+    assert_eq!(stored["draft"]["minted_by"], json!(GOOGLE), "{stored}");
+    // The minter, under either subject, does not accept what their agent proposed.
+    for token in [jr.clone(), person(&p, ENTRA, Some(&[GOOGLE]))] {
+        let own = call(&p, &token, "promote_draft", json!({ "draft_id": filed })).await;
+        assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    }
+    // Nor does an admin who names the minter as the human who decided.
+    let vouched = call(
+        &p,
+        &admin,
+        "promote_draft",
+        json!({ "draft_id": filed, "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(
+        vouched["issues"][0]["code"],
+        json!("self_review"),
+        "{vouched}"
+    );
+    let eve = person(&p, EVE, Some(&[]));
+    let accepted = call(&p, &eve, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(
+        accepted["ok"],
+        json!(true),
+        "another person accepts: {accepted}"
+    );
+}
+
+#[tokio::test]
+async fn a_service_credential_decides_only_for_a_named_human_who_is_not_the_author() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let runner = p.mint_token_with_groups(
+        TENANT,
+        "escurel-runner",
+        &["escurel:runner", "editors"],
+        false,
+    );
+    let filed = draft(&p, &jr, "for-service").await;
+    let bare = call(&p, &runner, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(
+        bare["issues"][0]["code"],
+        json!("decided_by_required"),
+        "{bare}"
+    );
+    let author = call(
+        &p,
+        &runner,
+        "promote_draft",
+        json!({ "draft_id": filed, "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(
+        author["issues"][0]["code"],
+        json!("self_review"),
+        "{author}"
+    );
+    let named = call(
+        &p,
+        &runner,
+        "promote_draft",
+        json!({ "draft_id": filed, "decided_by": EVE }),
+    )
+    .await;
+    assert_eq!(named["ok"], json!(true), "{named}");
+    assert_eq!(named["decided_by"], json!(EVE), "{named}");
+
+    // A branch: an admin service credential merges only for a named human who is not the author.
+    call(&p, &jr, "create_branch", json!({ "name": "jr/svc" })).await;
+    call(
+        &p,
+        &jr,
+        "update_page",
+        json!({ "page_id": page("svc"), "content": body("svc"), "branch": "jr/svc" }),
+    )
+    .await;
+    let admin_service = p.mint_token_with_groups(
+        TENANT,
+        "escurel-runner",
+        &["escurel:runner", "editors"],
+        true,
+    );
+    let bare = call(
+        &p,
+        &admin_service,
+        "merge_branch",
+        json!({ "name": "jr/svc" }),
+    )
+    .await;
+    assert_eq!(
+        bare["issues"][0]["code"],
+        json!("decided_by_required"),
+        "{bare}"
+    );
+    let author = call(
+        &p,
+        &admin_service,
+        "merge_branch",
+        json!({ "name": "jr/svc", "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(
+        author["issues"][0]["code"],
+        json!("self_review"),
+        "{author}"
+    );
+    // A service names a human, never an agent or itself.
+    for bogus in ["agent:scribe", "escurel-runner", " "] {
+        let refused = call(
+            &p,
+            &admin_service,
+            "merge_branch",
+            json!({ "name": "jr/svc", "decided_by": bogus }),
+        )
+        .await;
+        assert_eq!(
+            refused["issues"][0]["code"],
+            json!("decided_by_required"),
+            "{bogus}: {refused}"
+        );
+    }
+    let merged = call(
+        &p,
+        &admin_service,
+        "merge_branch",
+        json!({ "name": "jr/svc", "decided_by": EVE }),
+    )
+    .await;
+    assert_eq!(merged["ok"], json!(true), "{merged}");
+    assert_eq!(
+        merged["decided_by"],
+        json!(EVE),
+        "the human is recorded: {merged}"
+    );
+    let listed = call(
+        &p,
+        &p.mint_token(TENANT, Role::Admin),
+        "list_branches",
+        json!({}),
+    )
+    .await;
+    let row = listed["branches"]
+        .as_array()
+        .expect("branches")
+        .iter()
+        .find(|b| b["name"] == json!("jr/svc"))
+        .cloned()
+        .expect("branch");
+    assert_eq!(row["decided_by"], json!(EVE), "{row}");
+
+    // A service promoting for an agent subject is refused the same way.
+    let other = draft(&p, &jr, "for-service-2").await;
+    let agentish = call(
+        &p,
+        &runner,
+        "promote_draft",
+        json!({ "draft_id": other, "decided_by": "agent:scribe" }),
+    )
+    .await;
+    assert_eq!(
+        agentish["issues"][0]["code"],
+        json!("decided_by_required"),
+        "{agentish}"
+    );
+}
+
+#[tokio::test]
+async fn a_branch_an_agent_token_opens_is_its_minters_too() {
+    let p = start().await;
+    let admin_h = p.mint_token_with_sub(TENANT, Role::Admin, "admin:h");
+    let agent = p.mint_token_acting_as(TENANT, "agent:scribe", "admin:h");
+    let made = call(&p, &agent, "create_branch", json!({ "name": "agent/work" })).await;
+    assert_eq!(made["ok"], json!(true), "{made}");
+    assert_eq!(made["branch"]["minted_by"], json!("admin:h"), "{made}");
+    call(
+        &p,
+        &agent,
+        "update_page",
+        json!({ "page_id": page("agent-branch"), "content": body("agent-branch"), "branch": "agent/work" }),
+    )
+    .await;
+    let own = call(
+        &p,
+        &admin_h,
+        "merge_branch",
+        json!({ "name": "agent/work" }),
+    )
+    .await;
+    assert_eq!(
+        own["issues"][0]["code"],
+        json!("self_review"),
+        "the minter does not merge it: {own}"
+    );
+    let other = p.mint_token_with_sub(TENANT, Role::Admin, "admin:k");
+    let merged = call(&p, &other, "merge_branch", json!({ "name": "agent/work" })).await;
+    assert_eq!(merged["ok"], json!(true), "{merged}");
+}

@@ -214,7 +214,7 @@ pub(super) struct DecideDraftArgs {
 /// write any name into the audit trail. Refused rather than ignored — a
 /// gateway that silently lost the attribution is how this was missed the
 /// first time.
-fn decided_by_or_caller(
+pub(super) fn decided_by_or_caller(
     decided_by: Option<&str>,
     caller: &AclCaller<'_>,
 ) -> Result<String, JsonRpcError> {
@@ -228,11 +228,13 @@ fn decided_by_or_caller(
         // rule turned every approval in that shape into `invalid_params`.
         // Caught by heron's `draft_verbs` suite the moment the field shipped.
         Some(human) if human == caller.subject => Ok(human.to_owned()),
-        Some(_) if !caller.is_admin => Err(JsonRpcError::invalid_params(
-            "`decided_by` names the human a gateway verified, and only an \
-             admin may vouch for another subject"
-                .to_owned(),
-        )),
+        Some(_) if !caller.is_admin && caller.service.is_none() => {
+            Err(JsonRpcError::invalid_params(
+                "`decided_by` names the human a gateway verified, and only an \
+             admin or a built-in service credential may vouch for another subject"
+                    .to_owned(),
+            ))
+        }
         Some(human) => Ok(human.to_owned()),
     }
 }
@@ -302,6 +304,7 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "base_version": d.base_version,
         "run_id": d.run_id,
         "root_event_id": d.root_event_id,
+        "minted_by": d.minted_by,
     })
 }
 
@@ -801,6 +804,14 @@ pub(super) async fn tool_create_draft(
             // agent's run.
             run_id: caller.run_id.map(str::to_owned),
             root_event_id: caller.root_event_id.map(str::to_owned),
+            // Who an agent author acts for: a token minted for an agent (`agent:<id>` subject) names its minter
+            // in `act.sub`, and the minter is an author of what it proposes, for separation of duties. (A
+            // workbench agent token already carries the human as its subject, so the human is the author.) From
+            // the verified token, never an argument.
+            minted_by: caller
+                .actor
+                .filter(|_| caller.subject.starts_with("agent:"))
+                .map(str::to_owned),
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -1018,7 +1029,10 @@ pub(super) async fn tool_promote_draft(
     .await?;
     // Separation of duties, after the authority checks (so a caller who may not make the write hears that
     // first) and before anything reaches a source.
-    if self_review(&caller, &subject, &draft.author) {
+    if service_needs_human(&caller, &subject) {
+        return Ok(service_needs_human_refusal(&draft.draft_id));
+    }
+    if self_review(&caller, &subject, &draft.author, draft.minted_by.as_deref()) {
         return Ok(self_review_refusal(&draft.draft_id));
     }
     let landing = match crate::write_back::run(
@@ -1808,9 +1822,12 @@ pub(super) async fn tool_promote_changeset(
         }
     }
     // Separation of duties for every open member, after the preflight and before anything lands.
+    if service_needs_human(&caller, &subject) {
+        return Ok(service_needs_human_refusal(&a.changeset_id));
+    }
     if open
         .iter()
-        .any(|m| self_review(&caller, &subject, &m.author))
+        .any(|m| self_review(&caller, &subject, &m.author, m.minted_by.as_deref()))
     {
         return Ok(self_review_refusal(&a.changeset_id));
     }
@@ -2007,9 +2024,45 @@ pub(super) async fn tool_discard_changeset(
 /// There is no admin break-glass. A built-in service credential (`escurel:runner` / bridge role) is not
 /// a person: it may file a draft and record the human who decided it, as long as that human is not the
 /// author. A gateway without a verifier has no identities to separate (dev / on-host mode).
-pub(super) fn self_review(caller: &AclCaller<'_>, decided_by: &str, author: &str) -> bool {
+pub(super) fn self_review(
+    caller: &AclCaller<'_>,
+    decided_by: &str,
+    author: &str,
+    minted_by: Option<&str>,
+) -> bool {
+    // Without a verifier there are no people to separate (dev / on-host mode).
+    if caller.unauthenticated {
+        return false;
+    }
+    // The author, and the person who minted the agent token that filed it (`minted_by`), are both authors.
+    std::iter::once(author)
+        .chain(minted_by.filter(|m| !m.is_empty()))
+        .any(|a| decided_by == a || (caller.service.is_none() && caller.is_same_person(a)))
+}
+
+/// A built-in service credential decides only for a named human (`decided_by`, someone other than itself):
+/// a service is not a person, so a decision it makes without one would record no one who decided.
+pub(super) fn service_needs_human(caller: &AclCaller<'_>, decided_by: &str) -> bool {
     !caller.unauthenticated
-        && (decided_by == author || (caller.service.is_none() && caller.is_same_person(author)))
+        && caller.service.is_some()
+        && (decided_by == caller.subject
+            || decided_by.trim().is_empty()
+            || decided_by.starts_with("agent:"))
+}
+
+pub(super) fn service_needs_human_refusal(id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "decided_by_required",
+            "location": "decided_by",
+            "message": format!(
+                "`{id}`: a service credential decides only for a named human; pass `decided_by` with the person \
+                 who decided (not the author)"
+            ),
+        }],
+    })
 }
 
 pub(super) fn self_review_refusal(id: &str) -> Value {

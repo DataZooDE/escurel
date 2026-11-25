@@ -110,6 +110,7 @@ async fn seed_source() -> Source {
             base_version: None,
             run_id: None,
             root_event_id: None,
+            minted_by: None,
         })
         .await
         .expect("draft");

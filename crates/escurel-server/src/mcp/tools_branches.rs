@@ -158,6 +158,10 @@ pub(super) struct DecideBranchArgs {
     name: String,
     #[serde(default)]
     reason: String,
+    /// The human who decided, when an admin or a built-in service credential merges for them (as
+    /// `promote_draft`'s `decided_by`). A service credential must name one.
+    #[serde(default)]
+    decided_by: Option<String>,
 }
 
 /// Open an isolated workspace.
@@ -220,7 +224,15 @@ pub(super) async fn tool_create_branch(
     }
 
     match indexer
-        .create_branch(name, caller.subject, &base_version)
+        .create_branch(
+            name,
+            caller.subject,
+            &base_version,
+            // Who an agent author acts for (as on drafts): the minter is an author of the branch too.
+            caller
+                .actor
+                .filter(|_| caller.subject.starts_with("agent:")),
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_branch: {e}")))?
     {
@@ -301,6 +313,7 @@ fn branch_to_json(b: &escurel_index::BranchInfo) -> Value {
         "reason": b.reason,
         "decided_by": b.decided_by,
         "created_at": b.created_at,
+        "minted_by": b.minted_by,
     })
 }
 
@@ -541,7 +554,19 @@ pub(super) async fn tool_merge_branch(
     // Separation of duties, as for drafts, after the pre-flight (so a caller who may not make a write hears
     // that first) and before anything lands: the merge into trunk is another person's (an admin's) decision,
     // never the author's — under any of the author's subjects (`same_person`).
-    if crate::mcp::tools_drafts::self_review(&caller, caller.subject, &branch.author) {
+    let decided_by =
+        crate::mcp::tools_drafts::decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+    if crate::mcp::tools_drafts::service_needs_human(&caller, &decided_by) {
+        return Ok(crate::mcp::tools_drafts::service_needs_human_refusal(
+            &branch.name,
+        ));
+    }
+    if crate::mcp::tools_drafts::self_review(
+        &caller,
+        &decided_by,
+        &branch.author,
+        branch.minted_by.as_deref(),
+    ) {
         let mut refusal = crate::mcp::tools_drafts::self_review_refusal(&branch.name);
         refusal["issues"][0]["location"] = json!("name");
         return Ok(refusal);
@@ -613,14 +638,14 @@ pub(super) async fn tool_merge_branch(
     }
 
     indexer
-        .close_branch(&branch.name, "merged", caller.subject, "")
+        .close_branch(&branch.name, "merged", &decided_by, "")
         .await
         .map_err(|e| JsonRpcError::internal(format!("merge_branch close: {e}")))?;
 
     Ok(json!({
         "ok": true,
         "name": branch.name,
-        "decided_by": caller.subject,
+        "decided_by": decided_by,
         "results": results,
     }))
 }

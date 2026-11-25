@@ -47,6 +47,9 @@ pub struct BranchInfo {
     pub decided_by: String,
     /// RFC 3339.
     pub created_at: String,
+    /// Who an agent author acted for (the token's `act.sub` when an `agent:<id>` token opened it); `None`
+    /// for a branch a person opened. Separation of duties treats it as an author.
+    pub minted_by: Option<String>,
 }
 
 /// One page's state inside a branch: which slug it overlays, and whether the
@@ -69,11 +72,12 @@ fn row_to_branch(row: &duckdb::Row<'_>) -> duckdb::Result<BranchInfo> {
         reason: row.get(4)?,
         decided_by: row.get(5)?,
         created_at: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        minted_by: row.get(7)?,
     })
 }
 
 const SELECT_BRANCH: &str = "SELECT name, base_version, author, status, reason, decided_by, \
-     strftime(created_at, '%Y-%m-%dT%H:%M:%SZ') FROM branches";
+     strftime(created_at, '%Y-%m-%dT%H:%M:%SZ'), minted_by FROM branches";
 
 impl Indexer {
     /// Register a branch. Returns `Ok(None)` when one of that name already
@@ -88,6 +92,7 @@ impl Indexer {
         name: &str,
         author: &str,
         base_version: &str,
+        minted_by: Option<&str>,
     ) -> Result<Option<BranchInfo>, IndexerError> {
         {
             let conn = self.conn.lock().await;
@@ -100,9 +105,9 @@ impl Indexer {
                 return Ok(None);
             }
             conn.execute(
-                "INSERT INTO branches (name, base_version, author, status, created_at) \
-                 VALUES (?, ?, ?, 'open', CURRENT_TIMESTAMP)",
-                duckdb::params![name, base_version, author],
+                "INSERT INTO branches (name, base_version, author, minted_by, status, created_at) \
+                 VALUES (?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)",
+                duckdb::params![name, base_version, author, minted_by],
             )?;
         }
         // A new isolated workspace is something a subscriber must be able to

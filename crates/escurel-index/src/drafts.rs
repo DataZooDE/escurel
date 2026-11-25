@@ -98,6 +98,9 @@ pub struct DraftInfo {
     pub run_id: Option<String>,
     /// That run's lineage root event; `None` with `run_id`.
     pub root_event_id: Option<String>,
+    /// Who the machine author acted for (the token's `act.sub`), stamped from the verified token; `None` for a
+    /// draft no machine filed. Separation of duties treats it as an author.
+    pub minted_by: Option<String>,
 }
 
 /// A changeset as a queue row (#509 §1): the held writes of one run, counted
@@ -143,6 +146,8 @@ pub struct NewDraft {
     pub run_id: Option<String>,
     /// That run's lineage root event; server-set.
     pub root_event_id: Option<String>,
+    /// Who the machine author acted for (the token's `act.sub`); server-set.
+    pub minted_by: Option<String>,
 }
 
 /// Hex sha256 of a draft's bytes. Free function so the server can compute the
@@ -185,6 +190,7 @@ fn row_to_draft(row: &duckdb::Row<'_>) -> duckdb::Result<DraftInfo> {
         base_version: row.get(12)?,
         run_id: row.get(13)?,
         root_event_id: row.get(14)?,
+        minted_by: row.get(15)?,
     })
 }
 
@@ -193,7 +199,7 @@ fn select_cols(table: &str) -> String {
         "SELECT draft_id, target_page_id, content, content_sha256, base_sha256, \
          author, event_id, status, reason, decided_by, \
          strftime(created_at, '%Y-%m-%dT%H:%M:%SZ'), changeset_id, base_version, \
-         run_id, root_event_id \
+         run_id, root_event_id, minted_by \
          FROM {table}"
     )
 }
@@ -255,9 +261,9 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (tenant, draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, changeset_id, base_version, run_id, root_event_id, \
+                      author, event_id, changeset_id, base_version, run_id, root_event_id, minted_by, \
                       status, reason, decided_by, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     t,
@@ -272,6 +278,7 @@ impl Indexer {
                     &draft.base_version,
                     &draft.run_id,
                     &draft.root_event_id,
+                    &draft.minted_by,
                 ],
             )?;
         } else {
@@ -279,9 +286,9 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, changeset_id, base_version, run_id, root_event_id, \
+                      author, event_id, changeset_id, base_version, run_id, root_event_id, minted_by, \
                       status, reason, decided_by, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     &draft_id,
@@ -295,6 +302,7 @@ impl Indexer {
                     &draft.base_version,
                     &draft.run_id,
                     &draft.root_event_id,
+                    &draft.minted_by,
                 ],
             )?;
         }
