@@ -342,6 +342,7 @@ mod tests {
             parent_run_id: None,
             depth: 0,
             lineage_path: Vec::new(),
+            instance_path: Vec::new(),
             trace_id: None,
             harness: harness.to_owned(),
             model: None,

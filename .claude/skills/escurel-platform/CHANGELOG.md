@@ -4,6 +4,11 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.40.0 — a run's captures take the run's lineage
+
+- A per-run token's capture gets `provenance.runner` from the run's `run-started` (depth, paths, trace), whatever
+  the agent wrote; `run-started` records `instance_path` (references/11).
+
 ## 0.39.0 — a run's drafts are the requester's
 
 - The person who asked for a run counts as an author of the run's drafts and branches (`requested_by`, resolved

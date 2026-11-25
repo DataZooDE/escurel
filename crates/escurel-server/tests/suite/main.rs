@@ -158,6 +158,7 @@ mod reserved_ids_and_purge_gate;
 mod review_events;
 mod rows_instances;
 mod rows_paging_keys;
+mod run_capture_lineage;
 mod run_control_events;
 mod run_tool_calls;
 mod run_transcript_retention;

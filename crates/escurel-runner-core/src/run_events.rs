@@ -41,6 +41,9 @@ pub struct RunEventCtx {
     pub parent_run_id: Option<String>,
     pub depth: u32,
     pub lineage_path: Vec<String>,
+    /// The instances the cascade wrote so far (the trigger's `instance_path`). Recorded on `run-started` so
+    /// the gateway can give a capture the run's agent makes the run's lineage, not what the agent wrote.
+    pub instance_path: Vec<String>,
     pub trace_id: Option<String>,
     pub harness: String,
     pub model: Option<String>,
@@ -109,6 +112,7 @@ impl RunEventCtx {
         rest.insert("event_id".to_owned(), json!(self.trigger_event_id));
         rest.insert("depth".to_owned(), json!(self.depth));
         rest.insert("lineage_path".to_owned(), json!(self.lineage_path));
+        rest.insert("instance_path".to_owned(), json!(self.instance_path));
         rest.insert("harness".to_owned(), json!(self.harness));
         rest.insert("max_attempts".to_owned(), json!(self.max_attempts));
         if let Some(t) = &self.trace_id {

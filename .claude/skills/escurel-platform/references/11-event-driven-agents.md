@@ -215,7 +215,16 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   `provenance.runner.root_event_id` at capture (server-side — there is no
   argument for it). `list_events { root_event_id }` is therefore the whole
   thread under a root: the root itself, its cascade hops, and — with
-  `include_system` — its runs, any status, in ingestion order.
+  `include_system` — its runs, any status, in ingestion order. A capture
+  made with a **per-run token** takes its lineage from the run, not from
+  what the agent wrote: the root is the token's, and when the run's
+  `run:<run_id>:started` was filed by the token's runner (`act.sub`), the
+  gateway rebuilds `provenance.runner` from it on `capture_event`,
+  `start_operation` and `/ingest` (`depth` = the run's + 1, `lineage_path`
+  plus the event id, `instance_path` plus the run's own target,
+  `parent_run_id`, `trace_id`), whatever the agent sent, so an agent cannot
+  reset the depth budget or the cycle check. `run-started` records the
+  trigger's `instance_path` for that.
 - **`run_id`** is the run a system event belongs to (from
   `provenance.runner.run_id`). A cascade hop is *emitted by* a run and names
   it as `provenance.runner.parent_run_id`; it does not carry the run's id

@@ -2255,6 +2255,130 @@ pub(super) struct CaptureEventArgs {
     kind: Option<String>,
 }
 
+/// A run's lineage as its delegating runner recorded it on `run:<run_id>:started`.
+pub(super) struct RunStartedLineage {
+    run_id: String,
+    trigger_event_id: String,
+    depth: u64,
+    lineage_path: Vec<String>,
+    instance_path: Vec<String>,
+    target_page_id: Option<String>,
+    trace_id: Option<String>,
+}
+
+/// The lineage of the run a per-run token works in, read from `run:<run_id>:started` when that event was
+/// captured by the token's delegating runner (`act.sub`); `None` otherwise (no run, a run no runner started,
+/// or a start someone else filed). A capture inside such a run takes the run's depth, path and instance path,
+/// so an agent cannot reset the cascade's depth cap or cycle check by what it writes (#882).
+pub(super) async fn run_started_lineage(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+) -> Result<Option<RunStartedLineage>, JsonRpcError> {
+    let (Some(run_id), Some(actor)) = (
+        caller.run_id.filter(|r| !r.is_empty()),
+        caller.actor.filter(|a| !a.is_empty()),
+    ) else {
+        return Ok(None);
+    };
+    let Some(started) = indexer
+        .get_event(&format!("run:{run_id}:started"))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event: the run's start: {e}")))?
+    else {
+        return Ok(None);
+    };
+    if escurel_index::captured_by(&started.provenance) != Some(actor) {
+        return Ok(None);
+    }
+    let runner = &started.provenance["runner"];
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Ok(Some(RunStartedLineage {
+        run_id: run_id.to_owned(),
+        trigger_event_id: runner["event_id"].as_str().unwrap_or_default().to_owned(),
+        depth: runner["depth"].as_u64().unwrap_or(0),
+        lineage_path: strings(&runner["lineage_path"]),
+        instance_path: strings(&runner["instance_path"]),
+        target_page_id: runner["target_page_id"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned),
+        trace_id: runner["trace_id"].as_str().map(str::to_owned),
+    }))
+}
+
+/// Give a capture made with a per-run token its run's lineage (#882), on every capture path (`capture_event`,
+/// `start_operation`, `/ingest`). The root is always the token's. When the delegating runner filed the run's
+/// `run-started` ([`run_started_lineage`]), `provenance.runner` is rebuilt from it whatever the agent sent (no
+/// block, a forged one, a non-object): `depth` = the run's + 1, `lineage_path` = the run's + this event (an id is
+/// minted now when the caller gave none), `instance_path` = the run's + the instance the run works on (its
+/// `target_page_id`, as a runner hop adds what it wrote; never the capture's own target, which admission would
+/// read as a cycle),
+/// `parent_run_id`, `parent_event_id`, `trace_id`. Other keys of the agent's block are kept. Without such a
+/// `run-started`, the block still always carries the token's root and a numeric depth, so the runner parses it and
+/// the per-root budget holds. Returns the root, or `None` for a caller outside a run.
+pub(super) async fn stamp_run_lineage(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    event_id: &mut Option<String>,
+    provenance: &mut Option<Value>,
+) -> Result<Option<String>, JsonRpcError> {
+    let Some(root) = caller.root_event_id.filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let started = run_started_lineage(indexer, caller).await?;
+    let p = provenance.get_or_insert_with(|| json!({}));
+    if !p.is_object() {
+        *p = json!({ "provenance": p.take() });
+    }
+    let Some(map) = p.as_object_mut() else {
+        return Ok(Some(root.to_owned()));
+    };
+    let mut block = match map.remove("runner") {
+        Some(Value::Object(b)) => b,
+        _ => serde_json::Map::new(),
+    };
+    let Some(run) = started else {
+        // No run the runner recorded: the root is the token's, in a block the runner always parses (so the
+        // per-root budget holds); depth and paths are not the gateway's to know (the agent's, else a root hop).
+        let depth = block.get("depth").and_then(Value::as_u64).unwrap_or(0);
+        block.insert("root_event_id".to_owned(), json!(root));
+        block.insert("depth".to_owned(), json!(depth));
+        map.insert("runner".to_owned(), Value::Object(block));
+        return Ok(Some(root.to_owned()));
+    };
+    let id = event_id
+        .get_or_insert_with(|| ulid::Ulid::new().to_string())
+        .clone();
+    let mut path = run.lineage_path.clone();
+    path.push(id);
+    let mut instances = run.instance_path.clone();
+    if let Some(page) = run.target_page_id.as_deref()
+        && instances.last().map(String::as_str) != Some(page)
+    {
+        instances.push(page.to_owned());
+    }
+    block.insert("root_event_id".to_owned(), json!(root));
+    block.insert("depth".to_owned(), json!(run.depth + 1));
+    block.insert("lineage_path".to_owned(), json!(path));
+    block.insert("instance_path".to_owned(), json!(instances));
+    block.insert("parent_run_id".to_owned(), json!(run.run_id));
+    block.insert("parent_event_id".to_owned(), json!(run.trigger_event_id));
+    match &run.trace_id {
+        Some(t) => block.insert("trace_id".to_owned(), json!(t)),
+        None => block.remove("trace_id"),
+    };
+    map.insert("runner".to_owned(), Value::Object(block));
+    Ok(Some(root.to_owned()))
+}
+
 /// The lineage columns, promoted from provenance at capture: the runner's
 /// `runner` block (cascade hops, run events) first, then the gateway's
 /// `review` block (draft transitions). Server-side only — the wire has no
@@ -2854,14 +2978,7 @@ pub(super) async fn tool_capture_event(
             // caller's `provenance.runner` block (which the runner trusts for the next hop, and which
             // separation of duties follows back to the person who asked for the run).
             Some(root) => {
-                if let Some(block) = a
-                    .provenance
-                    .as_mut()
-                    .and_then(|p| p.get_mut("runner"))
-                    .and_then(Value::as_object_mut)
-                {
-                    block.insert("root_event_id".to_owned(), json!(root));
-                }
+                stamp_run_lineage(indexer, &caller, &mut a.event_id, &mut a.provenance).await?;
                 (
                     Some(root.to_owned()),
                     caller
@@ -3321,19 +3438,18 @@ pub(super) async fn tool_start_operation(
     // board-existence idempotency check above collapses sequential retries, and
     // for a rare concurrent same-key race the reducer's content-addressed step
     // ids (§3.6) collapse the plan to one execution even if two invoke folds land.
-    let mut provenance = stamp_captured_by(
-        Some(json!({
-            "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
-        })),
-        caller.subject,
-        caller.actor,
-    );
-    // A workflow a run starts is the run's requester's too (gateway-owned).
+    // A workflow a run starts stays in the run's cascade (#882) and is the run's requester's too.
+    let mut invocation_id = None;
+    let mut invocation = Some(json!({
+        "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
+    }));
+    let run_root = stamp_run_lineage(indexer, &caller, &mut invocation_id, &mut invocation).await?;
+    let mut provenance = stamp_captured_by(invocation, caller.subject, caller.actor);
     if let Some(p) = provenance.as_mut() {
         super::tools_drafts::stamp_run_requester(indexer, &caller, "start_operation", p).await?;
     }
     let requested = NewEvent {
-        event_id: None,
+        event_id: invocation_id,
         at: None,
         source: "escurel:start_operation".to_owned(),
         mime: "text/plain".to_owned(),
@@ -3342,6 +3458,7 @@ pub(super) async fn tool_start_operation(
         title: format!("operation: {}", a.wf_skill),
         body: a.input,
         provenance,
+        root_event_id: run_root,
         ..Default::default()
     };
     let stored = indexer
