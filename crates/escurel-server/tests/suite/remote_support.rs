@@ -104,7 +104,12 @@ pub fn loopback_ok() -> EgressPolicy {
 
 /// `tools/call` as `role`; returns the JSON-RPC envelope.
 pub async fn call_as(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
-    let token = p.mint_token(TENANT, role);
+    // A decision (promote, merge) is a reviewer's: nobody accepts their own proposal.
+    let token = if matches!(name, "promote_draft" | "promote_changeset" | "merge_branch") {
+        p.mint_token_with_sub(TENANT, role, "test-reviewer")
+    } else {
+        p.mint_token(TENANT, role)
+    };
     reqwest::Client::new()
         .post(p.mcp_url())
         .header("authorization", format!("Bearer {token}"))

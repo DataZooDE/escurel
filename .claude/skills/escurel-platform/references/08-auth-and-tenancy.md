@@ -43,6 +43,15 @@ operator token's `tenant` claim is still the served tenant. Nothing the gateway 
 value. Tests: `process.mint_operator_token("acme")`; `escurel-test-gateway` prints an `operator_bearer`. Design:
 `docs/design/operator-credential.md`.
 
+**Nobody accepts their own proposal.** `promote_draft` / `promote_changeset` refuse (`self_review`) a draft whose
+author is the human named in `decided_by`, or the caller itself (its subject or its `same_person` subjects), whatever
+`decided_by` says. No admin break-glass; only a built-in service credential may file a draft and record the deciding
+human. On an owner-only page only an admin promotes the owner's draft. Not covered: drafts filed under an agent token
+a person minted (`mint_agent_token`, authored `agent:<skill>`), and a reviewer's correction (`content`), which is the
+reviewer's own write. `merge_branch` likewise: the branch's author does not merge it; an admin who is not the author does. Only
+a gateway without a verifier is exempt. Tests that draft and decide need two subjects (`escurel-test-gateway` prints a
+`reviewer_bearer`; with `EscurelProcess`, mint a second subject).
+
 **One person, several subjects** (`same_person` claim). An issuer that knows that one human reaches the tenant under
 several subjects (one per identity provider) names the other subjects in the person's token: `same_person:
 ["<subject>", ...]` (at most 32 strings of 1 to 256 bytes, no control characters; anything else is an invalid token,

@@ -27,9 +27,11 @@
 //! The locally minted `bearer` is a HUMAN's (role `agent`, the subject given by `--subject`): it can read,
 //! draft and promote, and it is what an editor under test signs in with. The `admin_bearer` is
 //! the same subject with the admin role, for what only an admin may do (requeue, pause and
-//! resume the runner). Both expire in ten minutes, like every token this issuer mints; that is
-//! plenty for a test run and is not extended here, because a long-lived credential printed to
-//! stdout is the thing to avoid.
+//! resume the runner). The `reviewer_bearer` is ANOTHER person (`<subject>-reviewer`, the same groups):
+//! nobody accepts their own proposal, so what the signed-in subject drafts, this one decides
+//! (`reviewer_admin_bearer` is the reviewer with the admin role). All
+//! expire in ten minutes, like every token this issuer mints; that is plenty for a test run and is
+//! not extended here, because a long-lived credential printed to stdout is the thing to avoid.
 //!
 //! The `operator_bearer` carries the operator role beside admin: the only credential that may name
 //! another tenant in the cross-tenant admin tools (tenant registry, `tenant_export`/`tenant_import`).
@@ -163,6 +165,8 @@ fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io:
     let contents = json!({
         "bearer": mint_bearer(process, args),
         "admin_bearer": process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject),
+        "reviewer_bearer": mint_reviewer_bearer(process, args),
+        "reviewer_admin_bearer": mint_reviewer_admin_bearer(process, args),
         "operator_bearer": process.mint_operator_token(&args.tenant),
         "service_bearer": mint_service_bearer(process, args),
     })
@@ -173,6 +177,22 @@ fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io:
 fn mint_bearer(process: &EscurelProcess, args: &Args) -> String {
     let groups: Vec<&str> = args.groups.iter().map(String::as_str).collect();
     process.mint_token_with_groups(&args.tenant, &args.subject, &groups, false)
+}
+
+/// The subject of `reviewer_bearer`: another person than `--subject`, with the same groups. Nobody
+/// accepts their own proposal, so a test that drafts as the signed-in subject decides as this one.
+fn reviewer_subject(args: &Args) -> String {
+    format!("{}-reviewer", args.subject)
+}
+
+fn mint_reviewer_bearer(process: &EscurelProcess, args: &Args) -> String {
+    let groups: Vec<&str> = args.groups.iter().map(String::as_str).collect();
+    process.mint_token_with_groups(&args.tenant, &reviewer_subject(args), &groups, false)
+}
+
+/// `reviewer_admin_bearer`: the reviewer with the admin role, for decisions only an admin may make.
+fn mint_reviewer_admin_bearer(process: &EscurelProcess, args: &Args) -> String {
+    process.mint_token_with_sub(&args.tenant, Role::Admin, &reviewer_subject(args))
 }
 
 /// The worker identity's bearer, when `--service-subject` asked for one.
@@ -328,7 +348,15 @@ async fn main() {
     })
     .await;
 
-    let (signing_key, kid, bearer, admin_bearer, operator_bearer) = if external.is_none() {
+    let (
+        signing_key,
+        kid,
+        bearer,
+        admin_bearer,
+        operator_bearer,
+        reviewer_bearer,
+        reviewer_admin_bearer,
+    ) = if external.is_none() {
         let (key, kid) = process.signing_material();
         (
             Some(key),
@@ -336,9 +364,11 @@ async fn main() {
             Some(mint_bearer(&process, &args)),
             Some(process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject)),
             Some(process.mint_operator_token(&args.tenant)),
+            Some(mint_reviewer_bearer(&process, &args)),
+            Some(mint_reviewer_admin_bearer(&process, &args)),
         )
     } else {
-        (None, None, None, None, None)
+        (None, None, None, None, None, None, None)
     };
     // A demo outlasts a ten-minute token. The file is written BEFORE the line is printed, so a
     // reader that waits for the line always finds a bearer, and then kept fresh. Only what the
@@ -359,6 +389,8 @@ async fn main() {
             "signing_key": signing_key,
             "bearer": bearer,
             "admin_bearer": admin_bearer,
+            "reviewer_bearer": reviewer_bearer,
+            "reviewer_admin_bearer": reviewer_admin_bearer,
             "operator_bearer": operator_bearer,
             "service_bearer": mint_service_bearer(&process, &args),
             "tenant": args.tenant,

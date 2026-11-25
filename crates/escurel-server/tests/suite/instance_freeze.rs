@@ -104,7 +104,13 @@ async fn call_with(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> 
     body["result"]["structuredContent"].clone()
 }
 async fn call_as(p: &EscurelProcess, role: Role, tool: &str, args: Value) -> Value {
-    call_with(p, &p.mint_token(TENANT, role), tool, args).await
+    // A decision (promote, merge) is a reviewer's: nobody accepts their own proposal.
+    let token = if matches!(tool, "promote_draft" | "promote_changeset" | "merge_branch") {
+        p.mint_token_with_sub(TENANT, role, "test-reviewer")
+    } else {
+        p.mint_token(TENANT, role)
+    };
+    call_with(p, &token, tool, args).await
 }
 async fn call(p: &EscurelProcess, tool: &str, args: Value) -> Value {
     call_as(p, Role::Agent, tool, args).await

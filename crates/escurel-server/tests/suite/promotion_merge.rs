@@ -164,7 +164,13 @@ async fn a_draft_promotes_over_a_head_that_moved_on_a_different_key() {
 
     // The approval lands, and says it merged rather than pretending the
     // target never moved.
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(
         promoted["ok"],
         json!(true),
@@ -207,7 +213,13 @@ async fn the_same_key_on_both_sides_still_conflicts_and_the_draft_survives() {
     )
     .await;
 
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(false), "{promoted}");
     assert!(
         promoted["issues"]
@@ -259,8 +271,14 @@ async fn an_auto_merged_artifact_cannot_launder_a_curator_marker() {
     .await;
     assert_eq!(marked["ok"], json!(true), "{marked}");
 
-    // The AGENT's approval would now persist a document carrying the marker.
-    let promoted = call(&p, &agent, "promote_draft", json!({ "draft_id": draft_id })).await;
+    // Another (non-curator) person's approval would now persist a document carrying the marker.
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(
         promoted["ok"],
         json!(false),
@@ -310,7 +328,13 @@ async fn a_promotion_without_a_crdt_backend_behaves_as_before() {
         .to_owned();
 
     // An untouched target still promotes cleanly.
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "{promoted}");
     assert_eq!(
         promoted.get("auto_merged").and_then(Value::as_bool),
@@ -333,7 +357,7 @@ async fn a_promotion_without_a_crdt_backend_behaves_as_before() {
     let second_id = second["draft"]["draft_id"].as_str().expect("id").to_owned();
     let refused = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": second_id }),
     )
@@ -345,4 +369,9 @@ async fn a_promotion_without_a_crdt_backend_behaves_as_before() {
             .is_some_and(|i| i.iter().any(|i| i["code"] == json!("conflict"))),
         "{refused}"
     );
+}
+
+/// A reviewer: another person than the default test subject, who decides its proposals (nobody accepts their own).
+fn reviewer(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Agent, "test-reviewer")
 }

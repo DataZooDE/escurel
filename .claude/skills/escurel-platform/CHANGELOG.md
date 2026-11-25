@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.37.0 — nobody accepts their own proposal
+
+- `promote_draft` / `promote_changeset` refuse the author's own decision for every caller, with or without the
+  `same_person` claim and also for admins (no break-glass); `decided_by` names the deciding human, who must not be the
+  author. `merge_branch` too: the branch's author does not merge it. Only a gateway without a verifier is exempt.
+  `escurel-test-gateway` prints `reviewer_bearer` (another person) for tests (references/08, 02).
+
 ## 0.36.0 — one person, several subjects: the `same_person` claim
 
 - A token may name the other subjects of the same person (`same_person: [..]`, at most 32). With it, review is

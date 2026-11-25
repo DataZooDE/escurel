@@ -177,7 +177,13 @@ async fn a_skill_exported_as_skill_md_imports_back_as_an_equal_draft_and_promote
 
     // A person promotes it; the page reads exactly as before.
     let draft_id = draft["draft_id"].as_str().unwrap();
-    let promoted = ok(&h, &["draft", "promote", "--draft", draft_id]).await;
+    // Another person than the importer (nobody accepts their own proposal).
+    let reviewer = h
+        .process
+        .mint_token_with_sub(TENANT, Role::Agent, "test-reviewer");
+    let (promoted, _) = cli_as(&h, &reviewer, &["draft", "promote", "--draft", draft_id])
+        .await
+        .unwrap();
     assert_eq!(promoted["ok"], true, "{promoted}");
     let after = ok(&h, &["page", "expand", page_id]).await;
     assert_eq!(after["frontmatter"], before["frontmatter"]);
@@ -225,7 +231,15 @@ async fn an_anthropic_skill_md_imports_as_a_minimal_skill_and_its_files_are_list
     assert!(!has(&skills), "an import is a draft, not a write");
     let draft_id = imported["draft"]["draft_id"].as_str().unwrap();
     assert_eq!(
-        ok(&h, &["draft", "promote", "--draft", draft_id]).await["ok"],
+        cli_as(
+            &h,
+            &h.process
+                .mint_token_with_sub(TENANT, Role::Agent, "test-reviewer"),
+            &["draft", "promote", "--draft", draft_id]
+        )
+        .await
+        .unwrap()
+        .0["ok"],
         true
     );
     assert!(has(&ok(&h, &["skill", "list"]).await));

@@ -242,18 +242,70 @@ async fn a_person_withdraws_their_own_drafts_and_only_a_reviewer_rejects_another
 }
 
 #[tokio::test]
-async fn without_the_claim_review_is_unchanged_and_a_bad_claim_is_an_invalid_token() {
+async fn without_the_claim_the_subject_is_still_separated_and_a_bad_claim_is_an_invalid_token() {
     let p = start().await;
     let plain = person(&p, GOOGLE, None);
     let filed = draft(&p, &plain, "own").await;
     let me = call(&p, &plain, "whoami", json!({})).await;
     assert!(me.get("same_person").is_none(), "{me}");
-    let promoted = call(&p, &plain, "promote_draft", json!({ "draft_id": filed })).await;
+    // Nobody accepts their own proposal, also without the claim (the subject itself is the person).
+    let own = call(&p, &plain, "promote_draft", json!({ "draft_id": filed })).await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    // No admin break-glass: an admin's own draft waits for another person too.
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let admins = draft(&p, &admin, "admins-own").await;
+    let refused = call(&p, &admin, "promote_draft", json!({ "draft_id": admins })).await;
     assert_eq!(
-        promoted["ok"],
-        json!(true),
-        "no claim, no separation: {promoted}"
+        refused["issues"][0]["code"],
+        json!("self_review"),
+        "{refused}"
     );
+    // A service that filed a draft may record the human who decided it, never its author.
+    let vouched_author = call(
+        &p,
+        &admin,
+        "promote_draft",
+        json!({ "draft_id": filed, "decided_by": GOOGLE }),
+    )
+    .await;
+    assert_eq!(
+        vouched_author["issues"][0]["code"],
+        json!("self_review"),
+        "{vouched_author}"
+    );
+    // Naming someone else is no way round it either: the admin wrote the draft.
+    let vouched = call(
+        &p,
+        &admin,
+        "promote_draft",
+        json!({ "draft_id": admins, "decided_by": EVE }),
+    )
+    .await;
+    assert_eq!(
+        vouched["issues"][0]["code"],
+        json!("self_review"),
+        "{vouched}"
+    );
+    // Another admin records the human who decided (the admin's draft, decided by eve).
+    let other_admin = p.mint_token_with_sub(TENANT, Role::Admin, "service:recorder");
+    let recorded = call(
+        &p,
+        &other_admin,
+        "promote_draft",
+        json!({ "draft_id": admins, "decided_by": EVE }),
+    )
+    .await;
+    assert_eq!(recorded["ok"], json!(true), "{recorded}");
+    assert_eq!(recorded["decided_by"], json!(EVE), "{recorded}");
+    // Another person accepts the first one.
+    let promoted = call(
+        &p,
+        &person(&p, EVE, None),
+        "promote_draft",
+        json!({ "draft_id": filed }),
+    )
+    .await;
+    assert_eq!(promoted["ok"], json!(true), "{promoted}");
 
     for bad in [
         json!("google:jr"),
@@ -380,4 +432,121 @@ async fn a_changeset_is_rejected_by_a_reviewer_and_a_stale_draft_is_superseded_o
     .await;
     assert_eq!(replaced["ok"], json!(true), "{replaced}");
     assert_eq!(status(&p, &stale_id).await, json!("discarded"));
+}
+
+#[tokio::test]
+async fn a_person_does_not_merge_their_own_branch_another_person_does() {
+    let p = start().await;
+    let jr = person(&p, GOOGLE, Some(&[ENTRA]));
+    let made = call(&p, &jr, "create_branch", json!({ "name": "jr/work" })).await;
+    assert_eq!(made["ok"], json!(true), "{made}");
+    let wrote = call(
+        &p,
+        &jr,
+        "update_page",
+        json!({ "page_id": page("on-branch"), "content": body("on-branch"), "branch": "jr/work" }),
+    )
+    .await;
+    assert_eq!(wrote["ok"], json!(true), "{wrote}");
+    let own = call(&p, &jr, "merge_branch", json!({ "name": "jr/work" })).await;
+    assert_eq!(own["issues"][0]["code"], json!("self_review"), "{own}");
+    // A branch is its author's workspace: the Entra subject does not see it.
+    let entra = person(&p, ENTRA, Some(&[GOOGLE]));
+    let other = call(&p, &entra, "merge_branch", json!({ "name": "jr/work" })).await;
+    assert_eq!(
+        other["issues"][0]["code"],
+        json!("unknown_branch"),
+        "{other}"
+    );
+    // An admin who is the same person (its claim names the author) does not merge it either.
+    let same_admin = p.resign_token_with_claim(
+        &p.mint_token_with_sub(TENANT, Role::Admin, ENTRA),
+        "same_person",
+        json!([GOOGLE]),
+    );
+    let refused = call(
+        &p,
+        &same_admin,
+        "merge_branch",
+        json!({ "name": "jr/work" }),
+    )
+    .await;
+    assert_eq!(
+        refused["issues"][0]["code"],
+        json!("self_review"),
+        "{refused}"
+    );
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let merged = call(&p, &admin, "merge_branch", json!({ "name": "jr/work" })).await;
+    assert_eq!(merged["ok"], json!(true), "an admin merges: {merged}");
+    // An admin's own branch waits for another admin.
+    call(&p, &admin, "create_branch", json!({ "name": "admin/work" })).await;
+    call(
+        &p,
+        &admin,
+        "update_page",
+        json!({ "page_id": page("admins"), "content": body("admins"), "branch": "admin/work" }),
+    )
+    .await;
+    let own_admin = call(&p, &admin, "merge_branch", json!({ "name": "admin/work" })).await;
+    assert_eq!(
+        own_admin["issues"][0]["code"],
+        json!("self_review"),
+        "{own_admin}"
+    );
+    let other_admin = p.mint_token_with_sub(TENANT, Role::Admin, "admin:two");
+    let merged = call(
+        &p,
+        &other_admin,
+        "merge_branch",
+        json!({ "name": "admin/work" }),
+    )
+    .await;
+    assert_eq!(merged["ok"], json!(true), "{merged}");
+}
+
+#[tokio::test]
+async fn a_gateway_without_a_verifier_has_no_people_to_separate() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .done(),
+        ),
+    })
+    .await;
+    let open = |tool: &'static str, args: Value| {
+        let url = p.mcp_url();
+        async move {
+            let body: Value = reqwest::Client::new()
+                .post(url)
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": tool, "arguments": args } }))
+                .send()
+                .await
+                .expect("post")
+                .json()
+                .await
+                .expect("json");
+            body["result"]["structuredContent"].clone()
+        }
+    };
+    let made = open(
+        "create_draft",
+        json!({ "target_page_id": page("dev"), "content": body("dev") }),
+    )
+    .await;
+    let id = made["draft"]["draft_id"]
+        .as_str()
+        .expect("draft")
+        .to_owned();
+    let promoted = open("promote_draft", json!({ "draft_id": id })).await;
+    assert_eq!(
+        promoted["ok"],
+        json!(true),
+        "dev mode promotes its own draft: {promoted}"
+    );
 }

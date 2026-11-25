@@ -53,7 +53,12 @@ async fn start(note_extra: &str) -> EscurelProcess {
 }
 
 async fn call_as(p: &EscurelProcess, role: Role, tool: &str, args: Value) -> Value {
-    let token = p.mint_token(TENANT, role);
+    // A decision (promote, merge) is a reviewer's: nobody accepts their own proposal.
+    let token = if matches!(tool, "promote_draft" | "promote_changeset" | "merge_branch") {
+        p.mint_token_with_sub(TENANT, role, "test-reviewer")
+    } else {
+        p.mint_token(TENANT, role)
+    };
     let body: Value = reqwest::Client::new()
         .post(p.mcp_url())
         .header("authorization", format!("Bearer {token}"))

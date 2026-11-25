@@ -538,6 +538,14 @@ pub(super) async fn tool_merge_branch(
     if !issues.is_empty() {
         return Ok(json!({ "ok": false, "name": branch.name, "issues": issues }));
     }
+    // Separation of duties, as for drafts, after the pre-flight (so a caller who may not make a write hears
+    // that first) and before anything lands: the merge into trunk is another person's (an admin's) decision,
+    // never the author's — under any of the author's subjects (`same_person`).
+    if crate::mcp::tools_drafts::self_review(&caller, caller.subject, &branch.author) {
+        let mut refusal = crate::mcp::tools_drafts::self_review_refusal(&branch.name);
+        refusal["issues"][0]["location"] = json!("name");
+        return Ok(refusal);
+    }
 
     // ── Apply. ──
     let mut results = Vec::new();

@@ -245,6 +245,7 @@ async fn migrate_legacy_evolve_evidence_keeps_owner_acl_and_exact_bindings() {
                         agent: None,
                         service: None,
                         same_person: None,
+                        unauthenticated: false,
                     },
                     skill,
                     &frontmatter
@@ -266,6 +267,7 @@ async fn migrate_legacy_evolve_evidence_keeps_owner_acl_and_exact_bindings() {
                         agent: None,
                         service: None,
                         same_person: None,
+                        unauthenticated: false,
                     },
                     skill,
                     &frontmatter

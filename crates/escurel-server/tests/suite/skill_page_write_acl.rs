@@ -101,6 +101,16 @@ fn tenant_admin(p: &EscurelProcess) -> String {
     p.mint_token_with_groups(TENANT, "member:tia", &[TENANT_ADMIN], false)
 }
 
+/// Another member and another tenant administrator: the reviewers of the first ones' proposals (nobody
+/// accepts their own).
+fn other_member(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Agent, "member:ben")
+}
+
+fn other_tenant_admin(p: &EscurelProcess) -> String {
+    p.mint_token_with_groups(TENANT, "member:tina", &[TENANT_ADMIN], false)
+}
+
 fn admin(p: &EscurelProcess) -> String {
     p.mint_token(TENANT, Role::Admin)
 }
@@ -302,7 +312,7 @@ async fn a_run_token_is_never_granted_by_the_group() {
     assert_eq!(description(&p).await, "How we ship.");
     ok(
         &p,
-        &tenant_admin(&p),
+        &other_tenant_admin(&p),
         "promote_draft",
         json!({ "draft_id": draft_id }),
     )
@@ -347,9 +357,29 @@ async fn instance_pages_keep_their_own_acl() {
         &NOTE_N1.replace("# n1", "# n1\n\nv2"),
     )
     .await;
-    ok(
+    // Bob does not accept his own draft; another member may not write his note; an admin may.
+    let own = rpc(
         &p,
         &member(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
+    assert_eq!(
+        own["result"]["structuredContent"]["issues"][0]["code"], "self_review",
+        "{own}"
+    );
+    let other = rpc(
+        &p,
+        &other_member(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
+    assert_ne!(other["result"]["structuredContent"]["ok"], true, "{other}");
+    ok(
+        &p,
+        &admin(&p),
         "promote_draft",
         json!({ "draft_id": draft_id }),
     )
@@ -435,7 +465,7 @@ async fn a_star_keeps_skill_pages_open_to_every_writer() {
     let draft_id = draft(&p, &member(&p), PAGE, PLAYBOOK).await;
     ok(
         &p,
-        &member(&p),
+        &other_member(&p),
         "promote_draft",
         json!({ "draft_id": draft_id }),
     )

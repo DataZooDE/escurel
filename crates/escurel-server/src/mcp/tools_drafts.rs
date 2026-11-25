@@ -991,9 +991,6 @@ pub(super) async fn tool_promote_draft(
     if crate::mcp::tools_write::is_machine_caller(&caller) {
         return Ok(promote_requires_human(&draft.draft_id));
     }
-    if self_review(&caller, &subject, &draft.author) {
-        return Ok(self_review_refusal(&draft.draft_id));
-    }
     // The page's WRITE ACL, asked BEFORE anything reaches the source. Promotion only used to check
     // that the caller may SEE the draft, and the ACL was asked later by the page write: after
     // `write_back::run` had already changed the upstream. A person who may read a row but not write it
@@ -1019,6 +1016,11 @@ pub(super) async fn tool_promote_draft(
         Some(corrected.unwrap_or(draft.content.as_str())),
     )
     .await?;
+    // Separation of duties, after the authority checks (so a caller who may not make the write hears that
+    // first) and before anything reaches a source.
+    if self_review(&caller, &subject, &draft.author) {
+        return Ok(self_review_refusal(&draft.draft_id));
+    }
     let landing = match crate::write_back::run(
         state,
         indexer,
@@ -1667,12 +1669,6 @@ pub(super) async fn tool_promote_changeset(
         return Ok(promote_requires_human(&a.changeset_id));
     }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
-    if members
-        .iter()
-        .any(|m| m.status == "open" && self_review(&caller, &subject, &m.author))
-    {
-        return Ok(self_review_refusal(&a.changeset_id));
-    }
 
     // Already decided: a retry after a timeout the client never saw an answer
     // to. The transport warns that a mid-flight failure may already have
@@ -1795,6 +1791,28 @@ pub(super) async fn tool_promote_changeset(
             "changeset_id": a.changeset_id,
             "issues": issues,
         }));
+    }
+    // The write ACL of every open member, so a caller who may not make a write hears that first (and
+    // before any member lands).
+    for m in &open {
+        if let Some(refused) = crate::mcp::tools_write::write_acl_refusal(
+            indexer,
+            &caller,
+            write_acl,
+            &m.target_page_id,
+            &m.content,
+        )
+        .await?
+        {
+            return Ok(refused);
+        }
+    }
+    // Separation of duties for every open member, after the preflight and before anything lands.
+    if open
+        .iter()
+        .any(|m| self_review(&caller, &subject, &m.author))
+    {
+        return Ok(self_review_refusal(&a.changeset_id));
     }
 
     // Each member lands through the ordinary single-write path, which wants a
@@ -1983,15 +2001,18 @@ pub(super) async fn tool_discard_changeset(
     }))
 }
 
-/// Separation of duties by person (`same_person` claim): when the token's issuer asserts the caller's
-/// person, the caller does not decide a draft that any of that person's subjects wrote — whether the
-/// caller decides for itself or an admin names the human it vouches for (`decided_by`). Without the
-/// claim nothing is refused on this ground (the issuer did not ask for it).
-fn self_review(caller: &AclCaller<'_>, decided_by: &str, author: &str) -> bool {
-    caller.asserts_person() && (caller.is_same_person(author) || decided_by == author)
+/// Separation of duties: nobody accepts their own proposal. Refused when the draft's author is the
+/// human the caller names in `decided_by`, or the caller itself (its subject, or any subject its
+/// `same_person` claim lists) — whatever `decided_by` says, so naming someone else is no way round it.
+/// There is no admin break-glass. A built-in service credential (`escurel:runner` / bridge role) is not
+/// a person: it may file a draft and record the human who decided it, as long as that human is not the
+/// author. A gateway without a verifier has no identities to separate (dev / on-host mode).
+pub(super) fn self_review(caller: &AclCaller<'_>, decided_by: &str, author: &str) -> bool {
+    !caller.unauthenticated
+        && (decided_by == author || (caller.service.is_none() && caller.is_same_person(author)))
 }
 
-fn self_review_refusal(id: &str) -> Value {
+pub(super) fn self_review_refusal(id: &str) -> Value {
     json!({
         "ok": false,
         "issues": [{

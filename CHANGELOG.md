@@ -9,6 +9,26 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Changed:
+- **Nobody accepts their own proposal, also without the `same_person` claim and also as an admin.**
+  `promote_draft` and `promote_changeset` refuse (`self_review`) a draft whose author is the human the caller names
+  in `decided_by`, or the caller itself (its subject, or any subject its `same_person` claim lists), whatever
+  `decided_by` says. There is no admin break-glass: an admin's own draft waits for another person. A built-in
+  service credential (runner / bridge role) is not a person: it may file a draft and record the human who decided
+  it, as long as that human is not the author. `merge_branch` follows the same
+  rule: the branch's author (under any of its subjects) does not merge it; an admin who is not the author does. The
+  check runs after the write-permission and authority checks, so a caller who may not make the write hears that
+  first. A gateway without a verifier (dev / on-host mode, no identities) is not separated. `escurel-test-gateway`
+  prints a `reviewer_bearer` (another person, `<subject>-reviewer`, with the same groups) and a
+  `reviewer_admin_bearer` (that person with the admin role) for tests that draft as the signed-in subject and decide
+  as someone else.
+
+  **Upgrade:** a flow in which one identity both proposes and accepts (a single-person tenant, a script that drafts
+  and promotes with one token, a branch its author merges, a credential that files drafts and records the deciding
+  human with `decided_by`) now needs a second person or an admin; a built-in service credential may still file and
+  record. On a page only its owner may write (`owner_field`), only an admin now promotes the owner's draft. Reviewing as
+  someone else is the intended path; there is no setting to turn this off.
+
 ## v2026.11.25
 
 Added:

@@ -1259,6 +1259,7 @@ async fn dispatch_tools_call(
         agent: agent_profile.as_ref(),
         service,
         same_person,
+        unauthenticated: role.is_none(),
     };
     let write_acl = state.write_acl_for(&caller);
 

@@ -183,6 +183,7 @@ impl WsCaller {
             agent: None,
             service: None,
             same_person: None,
+            unauthenticated: false,
         }
     }
 }
