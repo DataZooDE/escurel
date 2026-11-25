@@ -383,7 +383,13 @@ async fn merging_a_branch_lands_its_pages_and_closes_it() {
     )
     .await;
 
-    let merged = call(&p, &token, "merge_branch", json!({ "name": "ready" })).await;
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "ready" }),
+    )
+    .await;
     assert_eq!(merged["ok"], json!(true), "{merged}");
     assert_eq!(
         merged["results"].as_array().map(Vec::len),
@@ -416,7 +422,13 @@ async fn merging_a_branch_lands_its_pages_and_closes_it() {
         .cloned()
         .unwrap_or_default();
     assert_eq!(row["status"], json!("merged"), "{all}");
-    let again = call(&p, &token, "merge_branch", json!({ "name": "ready" })).await;
+    let again = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "ready" }),
+    )
+    .await;
     assert_eq!(again["ok"], json!(false), "{again}");
     assert!(
         again["issues"]
@@ -473,7 +485,13 @@ async fn a_branch_whose_base_moved_on_the_same_key_blocks_entirely() {
     )
     .await;
 
-    let merged = call(&p, &token, "merge_branch", json!({ "name": "stale" })).await;
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "stale" }),
+    )
+    .await;
     assert_eq!(merged["ok"], json!(false), "{merged}");
     assert!(
         merged["issues"]
@@ -915,7 +933,8 @@ async fn a_machines_branch_belongs_to_the_person_it_acts_for() {
         "bob sees alice's branch: {theirs}"
     );
 
-    // Alice writes into it herself and merges it (the review); the base gets the machine's page.
+    // Alice writes into it herself; the branch is hers, so she does not merge it (nobody accepts their own
+    // proposal): an admin does (the review), and the base gets the machine's page.
     let by_alice = call(
         &p,
         &alice,
@@ -928,8 +947,20 @@ async fn a_machines_branch_belongs_to_the_person_it_acts_for() {
         json!(true),
         "alice writes into it: {by_alice}"
     );
-    let merged = call(&p, &alice, "merge_branch", json!({ "name": "agent/ws" })).await;
-    assert_eq!(merged["ok"], json!(true), "alice merges: {merged}");
+    let own = call(&p, &alice, "merge_branch", json!({ "name": "agent/ws" })).await;
+    assert_eq!(
+        own["issues"][0]["code"],
+        json!("self_review"),
+        "alice does not merge her own: {own}"
+    );
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "agent/ws" }),
+    )
+    .await;
+    assert_eq!(merged["ok"], json!(true), "an admin merges: {merged}");
     assert!(
         base_body(&p, &alice, "alpha")
             .await
@@ -997,7 +1028,13 @@ async fn a_branch_forked_from_a_page_with_history_merges_cleanly_when_the_base_d
     .await;
     assert_ne!(r["ok"], json!(false), "{r}");
 
-    let merged = call(&p, &token, "merge_branch", json!({ "name": "fresh" })).await;
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "fresh" }),
+    )
+    .await;
     assert_eq!(
         merged["ok"],
         json!(true),
@@ -1038,7 +1075,13 @@ async fn a_branch_tombstone_does_not_silently_delete_a_page_the_base_edited_sinc
     .await;
     assert_ne!(r["ok"], json!(false), "{r}");
 
-    let merged = call(&p, &token, "merge_branch", json!({ "name": "dropper" })).await;
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "dropper" }),
+    )
+    .await;
     assert_eq!(merged["ok"], json!(false), "{merged}");
     assert!(
         merged["issues"]
@@ -1090,7 +1133,13 @@ async fn a_branch_forked_from_a_page_with_history_still_conflicts_when_the_base_
     )
     .await;
 
-    let merged = call(&p, &token, "merge_branch", json!({ "name": "race" })).await;
+    let merged = call(
+        &p,
+        &admin_reviewer(&p),
+        "merge_branch",
+        json!({ "name": "race" }),
+    )
+    .await;
     assert_eq!(merged["ok"], json!(false), "{merged}");
     assert!(
         merged["issues"]
@@ -1135,4 +1184,9 @@ async fn two_branch_names_that_share_an_overlay_file_are_refused() {
     )
     .await;
     assert_eq!(other["ok"], json!(true), "{other}");
+}
+
+/// A reviewer: an admin who is not the author, who decides its proposals (nobody accepts their own).
+fn admin_reviewer(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Admin, "test-reviewer")
 }

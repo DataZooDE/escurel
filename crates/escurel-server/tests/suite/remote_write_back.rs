@@ -708,7 +708,12 @@ async fn call_with_deadline(
     args: Value,
     deadline: std::time::Duration,
 ) {
-    let token = p.mint_token(super::remote_support::TENANT, role);
+    // A decision is a reviewer's: nobody accepts their own proposal.
+    let token = if name == "promote_draft" {
+        p.mint_token_with_sub(super::remote_support::TENANT, role, "test-reviewer")
+    } else {
+        p.mint_token(super::remote_support::TENANT, role)
+    };
     let _ = reqwest::Client::builder()
         .timeout(deadline)
         .build()

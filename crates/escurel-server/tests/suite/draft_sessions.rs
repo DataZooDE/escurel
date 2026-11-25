@@ -228,7 +228,7 @@ async fn a_session_can_link_to_a_page_another_member_creates() {
     );
     let landed = call(
         &h,
-        &token,
+        &reviewer(&h),
         "promote_changeset",
         json!({"changeset_id": changeset}),
     )
@@ -535,7 +535,13 @@ async fn a_session_on_a_draft_edits_the_draft_and_leaves_the_page_alone() {
     );
 
     // And promotion lands them, through the ordinary promote path.
-    let promoted = call(&h, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &h,
+        &reviewer(&h),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
     assert_eq!(
         page_sha(&h, &token).await,
@@ -588,7 +594,13 @@ async fn a_decided_draft_has_no_session() {
     let token = author_token(&h);
     let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\ndone.\n";
     let draft_id = draft_of(&h, content).await;
-    let promoted = call(&h, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &h,
+        &reviewer(&h),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
 
     let denied = raw(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
@@ -748,7 +760,13 @@ async fn a_draft_decided_under_an_open_session_does_not_wedge_it() {
     assert!(applied.get("error").is_none(), "apply_op: {applied}");
 
     // Decided out from under the live session.
-    let promoted = call(&h, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &h,
+        &reviewer(&h),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
 
     let closed = call(
@@ -1133,4 +1151,10 @@ async fn an_unparseable_draft_is_still_visible_to_its_author() {
             .any(|d| d["draft_id"] == json!(draft_id)),
         "an unparseable draft must stay hidden from everyone else: {theirs}"
     );
+}
+
+/// A reviewer: an admin who is not the author, who decides its proposals (nobody accepts their own).
+fn reviewer(h: &Harness) -> String {
+    h.process
+        .mint_token_with_sub(TENANT, Role::Admin, "test-reviewer")
 }

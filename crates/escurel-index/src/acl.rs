@@ -76,6 +76,9 @@ pub struct AclCaller<'a> {
     /// separated by person: the gateway refuses the person's promotion of a draft any of their
     /// subjects wrote ([`Self::is_same_person`]).
     pub same_person: Option<&'a [String]>,
+    /// No verified identity: the gateway runs without a verifier (dev / on-host mode). Separation of
+    /// duties needs identities, so it does not apply; everything else treats this caller as an admin.
+    pub unauthenticated: bool,
 }
 
 impl AclCaller<'_> {

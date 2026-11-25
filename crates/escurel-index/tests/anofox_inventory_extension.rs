@@ -229,6 +229,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         agent: None,
         service: None,
         same_person: None,
+        unauthenticated: false,
     }
 }
 

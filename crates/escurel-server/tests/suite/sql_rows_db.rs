@@ -252,7 +252,13 @@ impl Gw {
     }
 
     pub(crate) async fn admin(&self, name: &str, args: Value) -> Value {
-        let token = self.p.mint_token(TENANT, Role::Admin);
+        // A decision (promote, merge) is a reviewer's: nobody accepts their own proposal.
+        let token = if matches!(name, "promote_draft" | "promote_changeset" | "merge_branch") {
+            self.p
+                .mint_token_with_sub(TENANT, Role::Admin, "test-reviewer")
+        } else {
+            self.p.mint_token(TENANT, Role::Admin)
+        };
         call_as(&self.p, &token, name, args).await
     }
 }

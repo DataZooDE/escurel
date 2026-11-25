@@ -138,7 +138,13 @@ async fn a_draft_is_invisible_until_promoted_and_lands_exactly_its_bytes() {
         "the open draft must be listed: {waiting}"
     );
 
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
     assert_eq!(
         page_sha(&p, &token, PAGE).await,
@@ -189,7 +195,13 @@ async fn promotion_conflicts_when_the_target_moved_and_the_draft_survives() {
     .await;
     assert_eq!(w["ok"], json!(true), "concurrent write: {w}");
 
-    let conflict = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let conflict = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(conflict["ok"], json!(false), "must conflict: {conflict}");
     assert_eq!(
         conflict["issues"][0]["code"],
@@ -227,7 +239,13 @@ async fn promotion_conflicts_when_the_target_moved_and_the_draft_survives() {
         .as_str()
         .expect("id")
         .to_owned();
-    let ok = call(&p, &token, "promote_draft", json!({ "draft_id": id2 })).await;
+    let ok = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": id2 }),
+    )
+    .await;
     assert_eq!(ok["ok"], json!(true), "re-draft must promote: {ok}");
     assert_eq!(page_sha(&p, &token, PAGE).await, Some(sha(&redraft)));
 }
@@ -413,7 +431,7 @@ async fn promoting_a_draft_takes_its_event_out_of_the_inbox() {
 
     call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": draft["draft"]["draft_id"] }),
     )
@@ -457,7 +475,7 @@ async fn a_draft_without_an_event_still_promotes() {
     .await;
     let promoted = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": draft["draft"]["draft_id"] }),
     )
@@ -506,7 +524,13 @@ async fn a_draft_is_decided_exactly_once() {
     let again = call(&p, &token, "discard_draft", json!({ "draft_id": draft_id })).await;
     assert_eq!(again["ok"], json!(false), "second discard: {again}");
 
-    let promote = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promote = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(
         promote["ok"],
         json!(false),
@@ -1148,13 +1172,16 @@ async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
 async fn an_admin_can_name_the_human_who_decided_and_the_record_follows() {
     let p = start().await;
     let gateway = p.mint_token(TENANT, Role::Admin);
+    // The drafts are filed by another credential than the one that records the decision: nobody accepts
+    // their own proposal, also not by naming someone else in `decided_by`.
+    let filer = p.mint_token_with_sub(TENANT, Role::Admin, "service:filer");
 
     let mut decided = Vec::new();
     for (page, who) in [("plan", "consultant:alice"), ("plan", "consultant:bob")] {
-        let head = page_sha(&p, &gateway, &format!("markdown/instances/note/{page}.md")).await;
+        let head = page_sha(&p, &filer, &format!("markdown/instances/note/{page}.md")).await;
         let created = call(
             &p,
-            &gateway,
+            &filer,
             "create_draft",
             json!({
                 "target_page_id": format!("markdown/instances/note/{page}.md"),
@@ -1195,10 +1222,12 @@ async fn an_admin_can_name_the_human_who_decided_and_the_record_follows() {
 async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
     let p = start().await;
     let agent = p.mint_token_with_sub(TENANT, Role::Agent, "agent:solo");
+    // The drafts are another person's: nobody accepts their own proposal.
+    let author = p.mint_token_with_sub(TENANT, Role::Agent, "consultant:author");
 
     let created = call(
         &p,
-        &agent,
+        &author,
         "create_draft",
         json!({
             "target_page_id": "markdown/instances/note/plan.md",
@@ -1255,7 +1284,7 @@ async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
     // promote at all.
     let second = call(
         &p,
-        &agent,
+        &author,
         "create_draft",
         json!({
             "target_page_id": "markdown/instances/note/plan.md",
@@ -1341,7 +1370,13 @@ async fn a_second_open_draft_for_the_same_page_is_refused() {
     // …and the page is still draftable once that decision is made. Without
     // this the rule would be "one draft per page, ever", which would stop the
     // loop dead after the first approval.
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": first_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": first_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "{promoted}");
 
     let after = call(
@@ -1546,7 +1581,7 @@ async fn a_correction_at_approval_time_is_what_lands() {
 
     let out = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": id, "content": body("plan", "The reviewer's wording.") }),
     )
@@ -1594,7 +1629,7 @@ async fn a_correction_that_would_not_validate_is_refused() {
 
     let refused = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": &id, "content": "# no frontmatter at all\n" }),
     )
@@ -1608,7 +1643,13 @@ async fn a_correction_that_would_not_validate_is_refused() {
 
     // Control: the same draft, promoted WITHOUT a correction, still works — so
     // the refusal is about the corrected bytes and not about the draft.
-    let ok = call(&p, &token, "promote_draft", json!({ "draft_id": &id })).await;
+    let ok = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": &id }),
+    )
+    .await;
     assert_eq!(ok["ok"], json!(true), "control: {ok}");
 }
 
@@ -1688,7 +1729,7 @@ async fn an_interrupted_promotion_completes_instead_of_wedging_the_draft() {
     // The retry. It must succeed, and say why it did not have to write.
     let retry = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": &draft_id }),
     )
@@ -1775,7 +1816,7 @@ async fn a_page_that_moved_to_other_bytes_is_still_a_conflict() {
 
     let conflict = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_draft",
         json!({ "draft_id": &draft_id }),
     )
@@ -1964,4 +2005,10 @@ async fn diff_draft_reports_a_sentinel_create_as_current_until_the_page_appears(
         json!(true),
         "a page that appeared under a create draft has moved: {diff}"
     );
+}
+
+/// A reviewer: another person than the default test subject, who decides its proposals (nobody accepts
+/// their own).
+fn reviewer(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Agent, "test-reviewer")
 }

@@ -150,7 +150,7 @@ async fn a_runs_drafts_are_grouped_and_land_together() {
 
     let promoted = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )
@@ -206,7 +206,7 @@ async fn a_changeset_that_cannot_land_entirely_lands_nothing() {
 
     let promoted = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )
@@ -256,7 +256,7 @@ async fn promoting_a_changeset_twice_completes_rather_than_conflicting() {
 
     let once = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )
@@ -266,7 +266,7 @@ async fn promoting_a_changeset_twice_completes_rather_than_conflicting() {
     // The retry a client makes when it never saw the first answer.
     let twice = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )
@@ -341,7 +341,7 @@ async fn discarding_a_changeset_closes_every_member_with_the_reason() {
     // A second decision is refused, not silently re-applied.
     let again = call(
         &p,
-        &token,
+        &reviewer(&p),
         "promote_changeset",
         json!({ "changeset_id": changeset }),
     )
@@ -395,8 +395,19 @@ async fn a_draft_with_no_changeset_is_unchanged() {
     );
 
     // And promotes exactly as before.
-    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    let promoted = call(
+        &p,
+        &reviewer(&p),
+        "promote_draft",
+        json!({ "draft_id": draft_id }),
+    )
+    .await;
     assert_eq!(promoted["ok"], json!(true), "{promoted}");
     let landed = page_body(&p, &token, PAGES[0]).await.unwrap_or_default();
     assert!(landed.contains("v2 alone."), "{landed}");
+}
+
+/// A reviewer: another person than the default test subject, who decides its proposals (nobody accepts their own).
+fn reviewer(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Agent, "test-reviewer")
 }

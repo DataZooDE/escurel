@@ -106,6 +106,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         agent: None,
         service: None,
         same_person: None,
+        unauthenticated: false,
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
@@ -120,6 +121,7 @@ fn admin<'a>() -> AclCaller<'a> {
         agent: None,
         service: None,
         same_person: None,
+        unauthenticated: false,
     }
 }
 

@@ -70,6 +70,7 @@ impl IngestCaller {
             agent: self.agent.as_ref(),
             service: None,
             same_person: None,
+            unauthenticated: false,
         }
     }
 }
@@ -1306,6 +1307,7 @@ async fn blob_get_inner(
         agent: None,
         service: None,
         same_person: None,
+        unauthenticated: false,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (
