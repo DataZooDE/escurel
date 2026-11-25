@@ -110,6 +110,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn member_with_groups<'a>(subject: &'a str, groups: &'a [String]) -> AclCaller<'
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     }
 }
 
@@ -251,6 +253,7 @@ async fn instance_level_acl_block_overrides_the_skill() {
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     };
     assert!(
         h.indexer
@@ -670,6 +673,7 @@ async fn admin_bypasses_owner_visibility() {
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     };
     assert!(
         h.indexer

@@ -182,6 +182,7 @@ impl WsCaller {
             // Agent tokens never reach `/ws` (`role_gate::surface_refusal`).
             agent: None,
             service: None,
+            same_person: None,
         }
     }
 }

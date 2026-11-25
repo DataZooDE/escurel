@@ -2591,7 +2591,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "subject": { "type": "string" },
             "tenant": { "type": "string" },
             "is_admin": { "type": "boolean" },
-            "service": { "type": "string", "enum": ["runner", "bridge"], "description": "the built-in service role the credential holds; absent otherwise" }
+            "service": { "type": "string", "enum": ["runner", "bridge"], "description": "the built-in service role the credential holds; absent otherwise" },
+            "same_person": { "type": "array", "items": { "type": "string" }, "description": "the other subjects the token's issuer asserts are the same person (`same_person` claim); absent when it asserts none" }
         })),
         "resolve" => obj(json!({
             "parsed": { "type": "object" },

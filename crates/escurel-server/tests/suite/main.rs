@@ -161,6 +161,7 @@ mod rows_paging_keys;
 mod run_control_events;
 mod run_tool_calls;
 mod run_transcript_retention;
+mod same_person;
 mod schema_ergonomics;
 mod search_hidden;
 mod search_hygiene;

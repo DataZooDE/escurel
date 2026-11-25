@@ -9,6 +9,22 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Added:
+- **Separation of duties by person: the `same_person` claim.** One human may reach a tenant under several subjects
+  (one per identity provider). An issuer that knows this names the other subjects in the person's token
+  (`same_person: ["<subject>", ...]`, at most 32 strings of 1 to 256 bytes without control characters; anything else
+  is an invalid token, on every path). With the claim present (even empty) `promote_draft` and `promote_changeset`
+  refuse a draft written by the caller's subject or any listed one (`self_review`); an admin with the claim that names
+  the author itself in `decided_by` is refused too (a vouched human's other subjects are known only from that human's
+  own token). `discard_draft` / `discard_changeset` of another person's draft, and superseding another person's stale
+  draft in `create_draft`, need an admin or a caller that may write the target page as it stands (or, while there is
+  none, the page the draft creates) (`not_author`; under `ESCUREL_WRITE_ACL=off` or `log` every caller may); the
+  person's own drafts under any listed subject are always visible to them and can be withdrawn. The claim separates
+  draft review only: a reviewer's correction (`content` on `promote_draft`) is the reviewer's own write, a draft a
+  person's workbench agent filed is the person's (another person reviews it), branch merges are not covered, and an
+  admin token without the claim may still vouch (`decided_by`) as before. Without the claim review is unchanged. A machine token (run, agent, actor, narrowed skill) never
+  carries a person: the claim is ignored there. `whoami` reports `same_person`.
+
 ## v2026.11.24
 
 Added:

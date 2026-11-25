@@ -264,11 +264,12 @@ pub(super) async fn may_see(
     caller: &AclCaller<'_>,
     draft: &escurel_index::drafts::DraftInfo,
 ) -> Result<bool, JsonRpcError> {
-    if caller.is_admin {
+    // The person's own draft (under any of their subjects): they already have the bytes.
+    if caller.is_admin || caller.is_same_person(&draft.author) {
         return Ok(true);
     }
     let Ok(parsed) = escurel_md::parse(&draft.content) else {
-        return Ok(draft.author == caller.subject);
+        return Ok(false);
     };
     let skill = parsed
         .frontmatter
@@ -696,7 +697,9 @@ pub(super) async fn tool_create_draft(
                 head_sha256.as_deref(),
                 open.base_sha256.as_deref(),
             );
-        if !predecessor_is_dead {
+        // Superseding closes the predecessor: with an asserted person (`same_person`) it takes the same right as a
+        // discard of another person's draft (`may_discard`), else the predecessor stays open (a conflict).
+        if !predecessor_is_dead || !may_discard(indexer, &caller, write_acl, &open).await? {
             return Ok(json!({
                 "ok": false,
                 "issues": [{
@@ -988,6 +991,9 @@ pub(super) async fn tool_promote_draft(
     if crate::mcp::tools_write::is_machine_caller(&caller) {
         return Ok(promote_requires_human(&draft.draft_id));
     }
+    if self_review(&caller, &subject, &draft.author) {
+        return Ok(self_review_refusal(&draft.draft_id));
+    }
     // The page's WRITE ACL, asked BEFORE anything reaches the source. Promotion only used to check
     // that the caller may SEE the draft, and the ACL was asked later by the page write: after
     // `write_back::run` had already changed the upstream. A person who may read a row but not write it
@@ -1228,6 +1234,7 @@ pub(super) async fn tool_discard_draft(
     state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideDraftArgs = parse_args(args, "discard_draft")?;
@@ -1261,6 +1268,12 @@ pub(super) async fn tool_discard_draft(
         && (d.run_id.is_none() || d.run_id.as_deref() != caller.run_id)
     {
         return Ok(promote_requires_human(&d.draft_id));
+    }
+    if let Some(d) = &draft
+        && d.status == "open"
+        && !may_discard(indexer, &caller, write_acl, d).await?
+    {
+        return Ok(discard_refusal(&d.draft_id));
     }
     let decided_by = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let closed = indexer
@@ -1654,6 +1667,12 @@ pub(super) async fn tool_promote_changeset(
         return Ok(promote_requires_human(&a.changeset_id));
     }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+    if members
+        .iter()
+        .any(|m| m.status == "open" && self_review(&caller, &subject, &m.author))
+    {
+        return Ok(self_review_refusal(&a.changeset_id));
+    }
 
     // Already decided: a retry after a timeout the client never saw an answer
     // to. The transport warns that a mid-flight failure may already have
@@ -1893,6 +1912,7 @@ pub(super) async fn tool_discard_changeset(
     state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideChangesetArgs = parse_args(args, "discard_changeset")?;
@@ -1910,6 +1930,11 @@ pub(super) async fn tool_discard_changeset(
             .any(|m| m.run_id.is_none() || m.run_id.as_deref() != caller.run_id)
     {
         return Ok(promote_requires_human(&a.changeset_id));
+    }
+    for m in members.iter().filter(|m| m.status == "open") {
+        if !may_discard(indexer, &caller, write_acl, m).await? {
+            return Ok(discard_refusal(&a.changeset_id));
+        }
     }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let mut discarded = 0usize;
@@ -1956,6 +1981,79 @@ pub(super) async fn tool_discard_changeset(
         "discarded": discarded,
         "decided_by": subject,
     }))
+}
+
+/// Separation of duties by person (`same_person` claim): when the token's issuer asserts the caller's
+/// person, the caller does not decide a draft that any of that person's subjects wrote — whether the
+/// caller decides for itself or an admin names the human it vouches for (`decided_by`). Without the
+/// claim nothing is refused on this ground (the issuer did not ask for it).
+fn self_review(caller: &AclCaller<'_>, decided_by: &str, author: &str) -> bool {
+    caller.asserts_person() && (caller.is_same_person(author) || decided_by == author)
+}
+
+fn self_review_refusal(id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "self_review",
+            "location": "draft_id",
+            "message": format!(
+                "`{id}` was proposed by you (or by a subject the token names as the same person): \
+                 another person has to accept it"
+            ),
+            "suggestion": "ask a reviewer; `discard_draft` withdraws your own proposal",
+        }],
+    })
+}
+
+/// Whether `caller` may discard a draft `draft` that is not its person's own, when its issuer asserts the person: an
+/// admin, or a reviewer — whoever may write the target page as it stands (or, while there is no page yet, the page the
+/// draft would create). The right is read from the stored page, not from the draft's bytes, so an author cannot write a
+/// draft only an admin could reject. A draft or page whose ACL cannot be read answers no (a refusal, never an error).
+/// Without the claim every caller that may see the draft may discard it, as before. Follows `ESCUREL_WRITE_ACL`: under
+/// `off` or `log` every caller may.
+async fn may_discard(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    draft: &escurel_index::drafts::DraftInfo,
+) -> Result<bool, JsonRpcError> {
+    if !caller.asserts_person() || caller.is_admin || caller.is_same_person(&draft.author) {
+        return Ok(true);
+    }
+    let stored = indexer
+        .read_page_markdown(&draft.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("discard acl: {e}")))?;
+    let judged = stored.as_deref().unwrap_or(draft.content.as_str());
+    if escurel_md::parse(judged).is_err() {
+        return Ok(false);
+    }
+    Ok(crate::mcp::tools_write::write_acl_refusal(
+        indexer,
+        caller,
+        write_acl,
+        &draft.target_page_id,
+        judged,
+    )
+    .await
+    .is_ok_and(|refused| refused.is_none()))
+}
+
+fn discard_refusal(id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "not_author",
+            "location": "draft_id",
+            "message": format!(
+                "`{id}` is another person's proposal and you may not make the write it proposes: \
+                 only its author withdraws it, and a reviewer rejects it"
+            ),
+        }],
+    })
 }
 
 /// Does this draft content carry a `write_back` intent (or a malformed one: refused the same way)?

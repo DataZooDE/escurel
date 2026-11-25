@@ -276,6 +276,48 @@ pub struct AuthContext {
     /// token's `act.sub`. Audit lineage only — the authority is the group's
     /// — stamped as `asked_by` on what the turn captures. `None` otherwise.
     pub asker: Option<String>,
+    /// The other subjects the issuer asserts are the same person as `subject` (`same_person` claim:
+    /// an array of strings, at most [`SAME_PERSON_MAX`]). An authorization input, and only ever a
+    /// restriction plus the person's own drafts: when it is present (even empty) the gateway refuses
+    /// the person's promotion of a draft any of these subjects (or `subject`) wrote, and a discard of
+    /// another person's draft needs the right to make that write. `None` when the claim is absent,
+    /// and always for a machine token: a run, an agent or an actor is nobody's person.
+    pub same_person: Option<Vec<String>>,
+}
+
+/// The claim naming the other subjects of the same person ([`AuthContext::same_person`]).
+pub const SAME_PERSON_CLAIM: &str = "same_person";
+/// The most subjects a `same_person` claim may name; more is an invalid token, never a shorter list.
+pub const SAME_PERSON_MAX: usize = 32;
+
+/// The `same_person` claim, read strictly: absent is `None`; anything but an array of at most
+/// [`SAME_PERSON_MAX`] non-empty strings (each at most 256 bytes, no control characters) is invalid.
+fn same_person_claim(
+    rest: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<Vec<String>>, AuthError> {
+    let Some(value) = rest.get(SAME_PERSON_CLAIM) else {
+        return Ok(None);
+    };
+    let invalid = || {
+        AuthError::Invalid(format!(
+            "`{SAME_PERSON_CLAIM}` must be an array of subjects"
+        ))
+    };
+    let list = value.as_array().ok_or_else(invalid)?;
+    if list.len() > SAME_PERSON_MAX {
+        return Err(invalid());
+    }
+    let mut out = Vec::with_capacity(list.len());
+    for entry in list {
+        let s = entry
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+            .ok_or_else(invalid)?;
+        if !out.iter().any(|o: &String| o == s) {
+            out.push(s.to_owned());
+        }
+    }
+    Ok(Some(out))
 }
 
 pub use escurel_types::service_role::ServiceRole;
@@ -495,6 +537,8 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
+        // A malformed `same_person` is an invalid token on every path, also where the value is then dropped.
+        let same_person = same_person_claim(&claims.rest)?;
         if entry.bridge {
             return bridge_context(
                 claims,
@@ -651,6 +695,7 @@ impl OidcVerifier {
         let issued_at = claims.rest.get("iat").and_then(serde_json::Value::as_u64);
 
         let agent_skill = claim_str(SKILL_CLAIM);
+        let agent_skill_is_set = agent_skill.is_some();
         let agent = claims.rest.get(AGENT_CLAIM).map(|v| {
             v.as_str()
                 .filter(|s| !s.is_empty())
@@ -672,6 +717,11 @@ impl OidcVerifier {
             service,
             issued_at,
             asker: None,
+            same_person: if machine || agent_skill_is_set {
+                None
+            } else {
+                same_person
+            },
         })
     }
 
@@ -815,6 +865,7 @@ fn bridge_context(
         service: None,
         issued_at: Some(iat),
         asker: None,
+        same_person: None,
     })
 }
 
@@ -874,6 +925,7 @@ fn minted_bridge_context(claims: Claims, cfg: &OidcConfig) -> Result<AuthContext
         service: None,
         issued_at: Some(iat),
         asker,
+        same_person: None,
     })
 }
 

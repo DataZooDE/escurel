@@ -43,6 +43,23 @@ operator token's `tenant` claim is still the served tenant. Nothing the gateway 
 value. Tests: `process.mint_operator_token("acme")`; `escurel-test-gateway` prints an `operator_bearer`. Design:
 `docs/design/operator-credential.md`.
 
+**One person, several subjects** (`same_person` claim). An issuer that knows that one human reaches the tenant under
+several subjects (one per identity provider) names the other subjects in the person's token: `same_person:
+["<subject>", ...]` (at most 32 strings of 1 to 256 bytes, no control characters; anything else is an invalid token,
+401, on every path). With the claim present, even empty, review is separated by person: `promote_draft` /
+`promote_changeset` refuse a draft written by the caller's subject or any listed one (`code: "self_review"`, nothing
+lands; an admin naming the author in `decided_by` is refused too, but a vouched human's other subjects are known only
+from that human's own token). `discard_draft` / `discard_changeset` of another person's draft, and superseding another
+person's stale draft in `create_draft`, need an admin or a caller that may write the target page as it stands (or,
+while there is none, the page the draft creates) (`code: "not_author"`, resp. `conflict`; with `ESCUREL_WRITE_ACL=off`
+or `log` every caller may). The person's own drafts under any listed subject are visible to them and may be discarded
+(withdrawn). The claim separates draft review only: a reviewer's correction (`content` on `promote_draft`) is the
+reviewer's own write, a draft the person's workbench agent filed is the person's own (another person reviews it),
+branch merges (`merge_branch`) are not covered, and an admin token without the claim may still vouch with
+`decided_by` as before. Without the claim nothing changes.
+`whoami` echoes the claim. A machine token (a run, an agent, an actor, a narrowed skill token) never carries a person:
+the claim is ignored there. Tests: `resign_token_with_claim(&token, "same_person", json!([..]))`.
+
 **Service roles** (`ESCUREL_AUTH_ROLE_TOOLS="app:worker=list_inbox,list_events,expand,create_draft,...;<role>=..."`).
 A token whose groups carry a listed role value may call only that role's tools; every other tool is refused with
 `-32001`, `data.code: "role_restricted"`, and `tools/list` shows only the allowed ones. Two listed roles give the
