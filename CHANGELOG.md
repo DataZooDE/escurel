@@ -9,6 +9,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.25.2
+
 Changed:
 - **A draft or branch an agent token files is its minter's too, and a service credential decides only for a named
   human.** A token minted for an agent (`agent:<id>` subject) names its minter in `act.sub`: whoever called the mint
