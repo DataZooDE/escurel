@@ -224,6 +224,7 @@ impl Migrator {
         Self::ensure_draft_changesets(conn)?;
         Self::ensure_draft_base_version(conn)?;
         Self::ensure_draft_run_lineage(conn)?;
+        Self::ensure_draft_minted_by(conn)?;
         Ok(())
     }
 
@@ -247,6 +248,23 @@ impl Migrator {
             return Ok(());
         }
         conn.execute_batch(STAGE_18_DRAFT_RUN_LINEAGE)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.minted_by` (who a machine author acted for) exists. Presence-checked and CHECKPOINTed like
+    /// [`Migrator::ensure_draft_run_lineage`].
+    pub fn ensure_draft_minted_by(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' AND column_name = 'minted_by'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_25_DRAFT_MINTED_BY)?;
         conn.execute_batch("CHECKPOINT;")?;
         Ok(())
     }
@@ -390,6 +408,18 @@ impl Migrator {
         )?;
         if present != 1 || tables != 1 {
             conn.execute_batch(STAGE_16_BRANCHES)?;
+            conn.execute_batch("CHECKPOINT;")?;
+        }
+        // `branches.minted_by` (who an agent author acted for): presence-checked + CHECKPOINTed, like the
+        // drafts columns, because `branches.created_at` carries a function-valued DEFAULT.
+        let minted: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'branches' AND column_name = 'minted_by'",
+            [],
+            |row| row.get(0),
+        )?;
+        if minted != 1 {
+            conn.execute_batch(STAGE_26_BRANCH_MINTED_BY)?;
             conn.execute_batch("CHECKPOINT;")?;
         }
         // Per-page fork points. A plain table (no function-valued default, no ALTER), so it is idempotent
@@ -575,6 +605,7 @@ impl Migrator {
         Self::ensure_draft_changesets(conn)?;
         Self::ensure_draft_base_version(conn)?;
         Self::ensure_draft_run_lineage(conn)?;
+        Self::ensure_draft_minted_by(conn)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -705,6 +736,8 @@ const STAGE_21_BRANCH_PAGE_BASES: &str = include_str!("../sql/0020_branch_page_b
 const STAGE_22_EMBEDDING_SPACE: &str = include_str!("../sql/0021_embedding_space.sql");
 const STAGE_23_RUN_TRANSCRIPTS: &str = include_str!("../sql/0022_run_transcripts.sql");
 const STAGE_24_SQL_VIEW_SEARCH_TEXT: &str = include_str!("../sql/0023_sql_view_search_text.sql");
+const STAGE_25_DRAFT_MINTED_BY: &str = include_str!("../sql/0024_drafts_minted_by.sql");
+const STAGE_26_BRANCH_MINTED_BY: &str = include_str!("../sql/0025_branches_minted_by.sql");
 
 #[cfg(test)]
 mod tests {

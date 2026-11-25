@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.38.0 — the minter is an author; services name the human
+
+- A draft filed under a token minted for an agent (`agent:<id>`) records `minted_by` (the token's `act.sub`), who
+  counts as an author for `self_review`. A service credential promotes or merges only with `decided_by` naming a human
+  who is not the author or minter (`decided_by_required`); `merge_branch` takes `decided_by` (references/08).
+
 ## 0.37.0 — nobody accepts their own proposal
 
 - `promote_draft` / `promote_changeset` refuse the author's own decision for every caller, with or without the

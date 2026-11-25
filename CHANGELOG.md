@@ -9,6 +9,24 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Changed:
+- **A draft or branch an agent token files is its minter's too, and a service credential decides only for a named
+  human.** A token minted for an agent (`agent:<id>` subject) names its minter in `act.sub`: whoever called the mint
+  tool (a person, or the runner for its per-run tokens). A draft or branch it opens records that subject as
+  `minted_by` (drafts also on the shared Postgres and lake tables; returned by `get_draft`, `list_drafts`,
+  `list_branches`), and separation of duties treats the minter like the author: the minter, any subject of their
+  person (`same_person`), and an admin naming the minter in `decided_by` are refused (`self_review`). A workbench
+  agent token already carries the person as its subject. A built-in service credential (runner / bridge role)
+  promotes a draft or changeset only with `decided_by` naming a human who is not the author or minter, and an admin
+  service credential merges a branch the same way (`decided_by_required` for no name, the service itself, or an
+  `agent:` subject); `merge_branch` takes `decided_by` like `promote_draft`, records it, and a service credential may
+  vouch like an admin. A service cannot know the author's other subjects: naming one of them is not caught.
+
+  **Upgrade:** the drafts tables (local, attached Postgres and lake) and the branch registry gain a nullable
+  `minted_by` column on start (`ADD COLUMN IF NOT EXISTS`). Drafts and branches opened before the upgrade have none, so
+  their minter is not recognised: review or discard open agent drafts first. A runner or bridge flow that promoted or
+  merged without naming the deciding human now has to pass `decided_by`.
+
 ## v2026.11.25.1
 
 Changed:

@@ -45,9 +45,12 @@ value. Tests: `process.mint_operator_token("acme")`; `escurel-test-gateway` prin
 
 **Nobody accepts their own proposal.** `promote_draft` / `promote_changeset` refuse (`self_review`) a draft whose
 author is the human named in `decided_by`, or the caller itself (its subject or its `same_person` subjects), whatever
-`decided_by` says. No admin break-glass; only a built-in service credential may file a draft and record the deciding
-human. On an owner-only page only an admin promotes the owner's draft. Not covered: drafts filed under an agent token
-a person minted (`mint_agent_token`, authored `agent:<skill>`), and a reviewer's correction (`content`), which is the
+`decided_by` says. No admin break-glass. A draft or branch opened under a token minted for an agent (`agent:<id>` subject)
+records its minter (`act.sub`: whoever called the mint tool, the runner for per-run tokens) as `minted_by`, who counts
+as an author too (not for rows from before v2026.11.25.2). A built-in service credential decides (promote; merge as an
+admin service) only with `decided_by` naming a human who is not the author or minter, not itself and not an `agent:`
+subject (`decided_by_required`); it cannot know the author's other subjects. On an owner-only
+page only an admin promotes the owner's draft. Not covered: a reviewer's correction (`content`), which is the
 reviewer's own write. `merge_branch` likewise: the branch's author does not merge it; an admin who is not the author does. Only
 a gateway without a verifier is exempt. Tests that draft and decide need two subjects (`escurel-test-gateway` prints a
 `reviewer_bearer`; with `EscurelProcess`, mint a second subject).

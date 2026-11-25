@@ -80,6 +80,7 @@ fn draft(n: u32) -> NewDraft {
         base_version: None,
         run_id: None,
         root_event_id: None,
+        minted_by: None,
     }
 }
 
