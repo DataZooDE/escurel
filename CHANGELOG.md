@@ -9,8 +9,10 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.25.1
+
 Changed:
-- **Nobody accepts their own proposal, also without the `same_person` claim and also as an admin.**
+- **Nobody accepts their own proposal, also without the `same_person` claim and also as an admin (#878).**
   `promote_draft` and `promote_changeset` refuse (`self_review`) a draft whose author is the human the caller names
   in `decided_by`, or the caller itself (its subject, or any subject its `same_person` claim lists), whatever
   `decided_by` says. There is no admin break-glass: an admin's own draft waits for another person. A built-in
