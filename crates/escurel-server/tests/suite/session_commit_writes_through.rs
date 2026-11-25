@@ -72,6 +72,10 @@ async fn start() -> Harness {
         },
     })
     .await;
+    // The run token a test mints names this root (`run_root_unavailable` otherwise).
+    process
+        .capture_run_roots(TENANT, "test:requester", &["root-9"])
+        .await;
     Harness {
         process,
         _db_dir: db_dir,

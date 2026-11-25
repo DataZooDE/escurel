@@ -24,7 +24,7 @@ fn instance(skill: &str, id: &str, note: &str) -> String {
 }
 
 async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+    let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             FixtureBuilder::new()
@@ -43,7 +43,11 @@ async fn start() -> EscurelProcess {
         ),
         ..Default::default()
     })
-    .await
+    .await;
+    // The run tokens these tests mint name these roots (`run_root_unavailable` otherwise).
+    p.capture_run_roots(TENANT, "test:requester", &["root-1"])
+        .await;
+    p
 }
 
 async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {

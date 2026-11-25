@@ -9,6 +9,33 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+Changed:
+- **A run's drafts and branches are the requester's too.** Separation of duties now also treats the person
+  who asked for a run as an author of what the run's agent proposes. The gateway resolves them once, when a per-run
+  token (`agent:*` with `root_event_id`) files a draft, opens a branch or captures an event (`capture_event`,
+  `start_operation`, `/ingest`): from the run's root event, its `run_requester` stamp when the gateway could have
+  written it (a per-run capture), else `asked_by` (a bridge turn), else `captured_by`, unless a machine or group
+  subject (`agent:*`, `group:*`, `escurel`, `escurel:*`). It is stored as `requested_by` (drafts, also on
+  the shared Postgres and lake tables; branch registry; returned by `get_draft`, `list_drafts`, `list_branches`),
+  and a per-run token's capture carries it forward as `provenance.run_requester` (gateway-owned, stripped from
+  caller input), so a run rooted at that capture keeps the requester however long the chain. `minted_by` stays
+  the token's `act.sub`, so naming someone else's root never frees the minter. The requester, their
+  `same_person` subjects, and an admin or service naming them in `decided_by` are refused (`self_review`): a run's
+  requester needs another authorised person to promote or merge its work. A per-run token's `capture_event` also
+  takes its lineage from the token: the stored `root_event_id` / `run_id`, and `provenance.runner.root_event_id`
+  when the block is present. No runner change: per-run tokens already carry the lineage. A run no person asked
+  for (a schedule), or with no root event (`root_event_id` = `run_id`), has no requester; a named root the gateway
+  does not hold (purged, never captured) is refused when the run files work (`run_root_unavailable`), so
+  separation of duties does not fail open. Test support: `EscurelProcess::capture_run_roots` seeds the roots of
+  the run tokens a test mints.
+
+  **Upgrade:** `drafts.requested_by` (local, attached Postgres, lake) and `branches.requested_by` are added on
+  start. Drafts and branches filed before the upgrade carry none.
+
+  **Known limit:** `decided_by` is a subject string; Escurel does not resolve it against an identity registry, so an
+  admin or service naming one of the author's (or minter's) *other* subjects is not caught. A person's own token is
+  checked through its `same_person` claim.
+
 ## v2026.11.25.2
 
 Changed:

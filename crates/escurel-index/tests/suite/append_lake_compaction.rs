@@ -81,6 +81,7 @@ fn draft(n: u32) -> NewDraft {
         run_id: None,
         root_event_id: None,
         minted_by: None,
+        requested_by: None,
     }
 }
 

@@ -116,6 +116,7 @@ impl CopyTable {
                     "root_event_id",
                     "seq",
                     "minted_by",
+                    "requested_by",
                 ],
                 order: "s.created_at NULLS LAST, s.draft_id",
             },

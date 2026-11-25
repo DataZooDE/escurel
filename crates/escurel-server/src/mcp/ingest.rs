@@ -600,6 +600,27 @@ async fn record_and_dispatch_ingest(
         .map(str::to_owned);
     // capture_event returns the first writer's row when attempts race.
     let attempt_id = ulid::Ulid::new().to_string();
+    let mut provenance = super::tools_write::stamp_captured_by(
+        Some(json!({
+            "blob_id": blob_id,
+            "content_type": content_type,
+            "handler_skill": handler,
+            "by": subject,
+            "ingest_attempt_id": attempt_id,
+        })),
+        subject,
+        // An upload is made by whoever presented the bearer; the
+        // ingest path carries no delegated run.
+        None,
+    )
+    .unwrap_or_else(|| json!({}));
+    // An upload inside a run carries the run's requester forward (gateway-owned).
+    if let Err(e) =
+        super::tools_drafts::stamp_run_requester(indexer, &caller.acl(), "ingest", &mut provenance)
+            .await
+    {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": e.message }))).into_response();
+    }
     let event = indexer
         .capture_event(NewEvent {
             event_id: caller_event_id,
@@ -614,19 +635,7 @@ async fn record_and_dispatch_ingest(
             // Stamped like every other capture: an uploaded document is
             // un-triaged third-party content too, and without the stamp it
             // would be the one inbox entry the per-event ACL cannot scope.
-            provenance: super::tools_write::stamp_captured_by(
-                Some(json!({
-                    "blob_id": blob_id,
-                    "content_type": content_type,
-                    "handler_skill": handler,
-                    "by": subject,
-                    "ingest_attempt_id": attempt_id,
-                })),
-                subject,
-                // An upload is made by whoever presented the bearer; the
-                // ingest path carries no delegated run.
-                None,
-            ),
+            provenance: Some(provenance),
             ..Default::default()
         })
         .await;

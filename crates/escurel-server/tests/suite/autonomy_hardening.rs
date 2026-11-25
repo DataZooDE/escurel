@@ -28,7 +28,7 @@ fn page(skill: &str, id: &str) -> String {
 }
 
 async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+    let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             FixtureBuilder::new()
@@ -45,7 +45,11 @@ async fn start() -> EscurelProcess {
         ),
         ..Default::default()
     })
-    .await
+    .await;
+    // The run tokens these tests mint name these roots (`run_root_unavailable` otherwise).
+    p.capture_run_roots(TENANT, "test:requester", &["root-1", "root-2", "root-9"])
+        .await;
+    p
 }
 
 async fn rpc(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {

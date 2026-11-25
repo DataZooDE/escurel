@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.39.0 — a run's drafts are the requester's
+
+- The person who asked for a run counts as an author of the run's drafts and branches (`requested_by`, resolved
+  when filed; `provenance.run_requester` carries it along a cascade); a per-run token's captures take their lineage
+  from the token; `decided_by` is not resolved against an identity registry (references/08).
+
 ## 0.38.0 — the minter is an author; services name the human
 
 - A draft filed under a token minted for an agent (`agent:<id>`) records `minted_by` (the token's `act.sub`), who

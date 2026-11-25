@@ -43,7 +43,7 @@ fn note(id: &str, body: &str) -> String {
 
 /// Two base pages, so "the branch touched one of them" is expressible.
 async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+    let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             live_crdt: true,
@@ -58,7 +58,11 @@ async fn start() -> EscurelProcess {
                 .done(),
         ),
     })
-    .await
+    .await;
+    // The run tokens these tests mint name these roots (`run_root_unavailable` otherwise).
+    p.capture_run_roots(TENANT, "test:requester", &["root-a", "root-b"])
+        .await;
+    p
 }
 
 /// [`start`] with a signing identity, so a person can mint a per-run agent token (`mint_agent_token`).

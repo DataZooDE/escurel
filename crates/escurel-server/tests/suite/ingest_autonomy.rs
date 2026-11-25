@@ -77,6 +77,8 @@ async fn a_machine_upload_into_a_review_document_skill_is_refused_a_person_s_lan
                 .to_owned()
         }
     };
+    p.capture_run_roots(TENANT, "test:requester", &["root-1", "root-2"])
+        .await;
     let machine = p.mint_token_for_run(TENANT, Role::Agent, "agent:ingest", "run-1", "root-1");
     let machine_admin =
         p.mint_token_for_run(TENANT, Role::Admin, "agent:ingest", "run-2", "root-2");

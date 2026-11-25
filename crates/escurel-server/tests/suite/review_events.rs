@@ -31,7 +31,7 @@ fn sha(s: &str) -> String {
 }
 
 async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+    let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides::default(),
         fixtures: Some(
@@ -42,7 +42,10 @@ async fn start() -> EscurelProcess {
                 .done(),
         ),
     })
-    .await
+    .await;
+    // The run tokens these tests mint name these roots (`run_root_unavailable` otherwise).
+    p.capture_run_roots(TENANT, "test:requester", &[ROOT]).await;
+    p
 }
 
 async fn call(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> Value {
@@ -178,7 +181,8 @@ async fn creating_promoting_and_discarding_a_draft_publish_review_system_events_
         json!({ "root_event_id": ROOT, "include_system": true }),
     )
     .await;
-    assert_eq!(tree["events"].as_array().unwrap().len(), 4, "{tree}");
+    // The four review events, and the run's root itself (seeded by `start`).
+    assert_eq!(tree["events"].as_array().unwrap().len(), 5, "{tree}");
 }
 
 /// P2-0: the runner's promotion subscriber needs the draft's TRIGGER event
@@ -270,7 +274,14 @@ async fn review_events_are_hidden_from_list_inbox_and_visible_with_include_syste
     let r = call(&p, &agent, "create_draft", draft_args("v2.")).await;
     assert_eq!(r["ok"], true, "{r}");
     let inbox = call(&p, &admin, "list_inbox", json!({})).await;
-    assert!(inbox["events"].as_array().unwrap().is_empty(), "{inbox}");
+    // Only the run's root (seeded by `start`) is in the inbox; no review event is.
+    let inbox_ids: Vec<&str> = inbox["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["event_id"].as_str())
+        .collect();
+    assert_eq!(inbox_ids, vec![ROOT], "{inbox}");
     let hist = call(
         &p,
         &admin,
