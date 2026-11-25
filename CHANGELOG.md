@@ -9,6 +9,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.11.25.3
+
 Changed:
 - **A run's drafts and branches are the requester's too.** Separation of duties now also treats the person
   who asked for a run as an author of what the run's agent proposes. The gateway resolves them once, when a per-run
