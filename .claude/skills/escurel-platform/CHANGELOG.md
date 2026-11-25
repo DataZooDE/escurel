@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.36.0 — one person, several subjects: the `same_person` claim
+
+- A token may name the other subjects of the same person (`same_person: [..]`, at most 32). With it, review is
+  separated by person: promoting a draft the caller's person wrote is refused (`self_review`), and discarding another
+  person's draft needs an admin or a caller that may make its write (`not_author`); the person's own drafts under any
+  listed subject may be withdrawn, and a stale draft of another person is superseded only with that right. A
+  reviewer's correction is the reviewer's own write; a person's workbench-agent drafts are the person's. Without the
+  claim nothing changes; machine tokens never carry it; a malformed claim (at most 32 entries of 1 to 256 bytes) is a
+  401. `whoami` echoes it (references/08, 02).
+
 ## 0.35.0 — a skill can keep its instances out of default search
 
 - A skill page may declare `search: {hidden: true, exact: [<field>, ...]}`. Default `search` (no `skill`, no

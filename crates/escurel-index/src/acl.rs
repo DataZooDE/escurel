@@ -71,9 +71,31 @@ pub struct AclCaller<'a> {
     /// ([`Self::may_keep_books`]), reads events and skill pages, and writes its
     /// own `runtime` instance — everything else follows its ordinary ACL.
     pub service: Option<escurel_types::service_role::ServiceRole>,
+    /// The other subjects the token's issuer asserts are the same person (`same_person` claim),
+    /// `None` when it asserts nothing (and for every machine token). When present, review is
+    /// separated by person: the gateway refuses the person's promotion of a draft any of their
+    /// subjects wrote ([`Self::is_same_person`]).
+    pub same_person: Option<&'a [String]>,
 }
 
 impl AclCaller<'_> {
+    /// Whether `other` is this caller's own subject or, when the issuer asserted the caller's person
+    /// (`same_person`), one of that person's subjects. Exact comparison, as subjects are compared
+    /// everywhere else.
+    #[must_use]
+    pub fn is_same_person(&self, other: &str) -> bool {
+        other == self.subject
+            || self
+                .same_person
+                .is_some_and(|all| all.iter().any(|s| s == other))
+    }
+
+    /// Whether the issuer asserted this caller's person, which turns on separation of duties in review.
+    #[must_use]
+    pub fn asserts_person(&self) -> bool {
+        self.same_person.is_some()
+    }
+
     /// Whether this caller keeps the runner's books: claims inbox events,
     /// files the run lifecycle / schedule / lint records, writes the
     /// `runtime` directory and mints per-run tokens. An admin or a runner,

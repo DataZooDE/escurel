@@ -69,6 +69,7 @@ impl IngestCaller {
             agent_skill: self.agent_skill.as_deref(),
             agent: self.agent.as_ref(),
             service: None,
+            same_person: None,
         }
     }
 }
@@ -1304,6 +1305,7 @@ async fn blob_get_inner(
         // Agent tokens never reach `/blob` (`role_gate::surface_refusal`).
         agent: None,
         service: None,
+        same_person: None,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (

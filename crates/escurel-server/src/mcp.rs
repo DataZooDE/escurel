@@ -387,6 +387,8 @@ async fn mcp_inner(
     let service = auth_ctx.as_ref().and_then(|c| c.service);
     // When the token was issued: an agent token issued before its agent's `token_epoch` is revoked.
     let issued_at = auth_ctx.as_ref().and_then(|c| c.issued_at);
+    // The person the issuer asserts (`same_person`): turns on separation of duties in review.
+    let same_person = auth_ctx.as_ref().and_then(|c| c.same_person.clone());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -475,6 +477,7 @@ async fn mcp_inner(
                 }),
                 service,
                 issued_at,
+                same_person.as_deref(),
                 req.params,
             ))
             .catch_unwind()
@@ -1182,6 +1185,7 @@ async fn dispatch_tools_call(
     bridge: Option<crate::bridge_gate::BridgeTurn<'_>>,
     service: Option<escurel_auth::ServiceRole>,
     issued_at: Option<u64>,
+    same_person: Option<&[String]>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1254,6 +1258,7 @@ async fn dispatch_tools_call(
         agent_skill,
         agent: agent_profile.as_ref(),
         service,
+        same_person,
     };
     let write_acl = state.write_acl_for(&caller);
 
@@ -1487,6 +1492,9 @@ async fn dispatch_tools_call(
                 "tenant": indexer.tenant(),
                 "is_admin": caller.is_admin,
             });
+            if let Some(person) = caller.same_person {
+                me["same_person"] = json!(person);
+            }
             if let Some(s) = service {
                 me["service"] = json!(match s {
                     escurel_auth::ServiceRole::Runner => "runner",
@@ -1544,12 +1552,14 @@ async fn dispatch_tools_call(
             tool_promote_changeset(state, indexer, caller, write_acl, params.arguments).await
         }
         "discard_changeset" => {
-            tool_discard_changeset(state, indexer, caller, params.arguments).await
+            tool_discard_changeset(state, indexer, caller, write_acl, params.arguments).await
         }
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, write_acl, params.arguments).await
         }
-        "discard_draft" => tool_discard_draft(state, indexer, caller, params.arguments).await,
+        "discard_draft" => {
+            tool_discard_draft(state, indexer, caller, write_acl, params.arguments).await
+        }
         "update_page" => {
             tool_update_page(state, indexer, caller, write_acl, params.arguments).await
         }

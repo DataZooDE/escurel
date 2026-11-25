@@ -235,8 +235,8 @@ privately, which put consumer-shaped objects in the knowledge base and made
 | `promote_changeset` | `changeset_id`, `decided_by?` (admin) | `{ok, changeset_id, results:[{draft_id, page_id, ok, already_applied}], already_decided?, partial?, issues}` | land a run's held writes as ONE decision. **All-or-nothing**: every member is pre-checked and if any would refuse, nothing lands and all stay open. Safe to retry — a member whose page already holds its bytes counts as applied, so an interrupted promotion completes instead of conflicting with itself |
 | `discard_changeset` | `changeset_id`, `reason?`, `decided_by?` (admin) | `{ok, discarded}` | refuse the whole proposal; nothing is written to any target |
 
-| `promote_draft` | Land it, under the approver's identity. |
-| `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
+| `promote_draft` | Land it, under the approver's identity. With a `same_person` claim on the token, never a draft the caller's person wrote (`self_review`, references/08). |
+| `discard_draft` | Refuse it, with a `reason`. Nothing is written. With a `same_person` claim, another person's draft only for an admin or a caller that may make its write (`not_author`). |
 
 Three properties are worth relying on:
 

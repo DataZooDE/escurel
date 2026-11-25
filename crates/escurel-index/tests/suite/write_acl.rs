@@ -105,6 +105,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
@@ -118,6 +119,7 @@ fn admin<'a>() -> AclCaller<'a> {
         agent_skill: None,
         agent: None,
         service: None,
+        same_person: None,
     }
 }
 
